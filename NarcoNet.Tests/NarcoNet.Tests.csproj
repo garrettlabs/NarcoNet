@@ -35,10 +35,10 @@
 
     <ItemGroup>
       <Reference Include="0Harmony">
-        <HintPath>..\..\..\..\..\..\SPT\BepInEx\core\0Harmony.dll</HintPath>
+        <HintPath>..\References\0Harmony.dll</HintPath>
       </Reference>
       <Reference Include="0Harmony20">
-        <HintPath>..\..\..\..\..\..\SPT\BepInEx\core\0Harmony20.dll</HintPath>
+        <HintPath>..\References\0Harmony20.dll</HintPath>
       </Reference>
       <Reference Include="Accessibility">
         <HintPath>..\References\Accessibility.dll</HintPath>
@@ -62,13 +62,13 @@
         <HintPath>..\References\Autodesk.Fbx.dll</HintPath>
       </Reference>
       <Reference Include="BepInEx">
-        <HintPath>..\..\..\..\..\..\SPT\BepInEx\core\BepInEx.dll</HintPath>
+        <HintPath>..\References\BepInEx.dll</HintPath>
       </Reference>
       <Reference Include="BepInEx.Harmony">
-        <HintPath>..\..\..\..\..\..\SPT\BepInEx\core\BepInEx.Harmony.dll</HintPath>
+        <HintPath>..\References\BepInEx.Harmony.dll</HintPath>
       </Reference>
       <Reference Include="BepInEx.Preloader">
-        <HintPath>..\..\..\..\..\..\SPT\BepInEx\core\BepInEx.Preloader.dll</HintPath>
+        <HintPath>..\References\BepInEx.Preloader.dll</HintPath>
       </Reference>
       <Reference Include="bsg.componentace.compression.libs.zlib">
         <HintPath>..\References\bsg.componentace.compression.libs.zlib.dll</HintPath>
@@ -119,7 +119,7 @@
         <HintPath>..\References\FilesChecker.dll</HintPath>
       </Reference>
       <Reference Include="HarmonyXInterop">
-        <HintPath>..\..\..\..\..\..\SPT\BepInEx\core\HarmonyXInterop.dll</HintPath>
+        <HintPath>..\References\HarmonyXInterop.dll</HintPath>
       </Reference>
       <Reference Include="ItemComponent.Types">
         <HintPath>..\References\ItemComponent.Types.dll</HintPath>
@@ -143,16 +143,16 @@
         <HintPath>..\References\Microsoft.CSharp.dll</HintPath>
       </Reference>
       <Reference Include="Mono.Cecil">
-        <HintPath>..\..\..\..\..\..\SPT\BepInEx\core\Mono.Cecil.dll</HintPath>
+        <HintPath>..\References\Mono.Cecil.dll</HintPath>
       </Reference>
       <Reference Include="Mono.Cecil.Mdb">
-        <HintPath>..\..\..\..\..\..\SPT\BepInEx\core\Mono.Cecil.Mdb.dll</HintPath>
+        <HintPath>..\References\Mono.Cecil.Mdb.dll</HintPath>
       </Reference>
       <Reference Include="Mono.Cecil.Pdb">
-        <HintPath>..\..\..\..\..\..\SPT\BepInEx\core\Mono.Cecil.Pdb.dll</HintPath>
+        <HintPath>..\References\Mono.Cecil.Pdb.dll</HintPath>
       </Reference>
       <Reference Include="Mono.Cecil.Rocks">
-        <HintPath>..\..\..\..\..\..\SPT\BepInEx\core\Mono.Cecil.Rocks.dll</HintPath>
+        <HintPath>..\References\Mono.Cecil.Rocks.dll</HintPath>
       </Reference>
       <Reference Include="Mono.Data.Sqlite">
         <HintPath>..\References\Mono.Data.Sqlite.dll</HintPath>
@@ -167,10 +167,10 @@
         <HintPath>..\References\Mono.WebBrowser.dll</HintPath>
       </Reference>
       <Reference Include="MonoMod.RuntimeDetour">
-        <HintPath>..\..\..\..\..\..\SPT\BepInEx\core\MonoMod.RuntimeDetour.dll</HintPath>
+        <HintPath>..\References\MonoMod.RuntimeDetour.dll</HintPath>
       </Reference>
       <Reference Include="MonoMod.Utils">
-        <HintPath>..\..\..\..\..\..\SPT\BepInEx\core\MonoMod.Utils.dll</HintPath>
+        <HintPath>..\References\MonoMod.Utils.dll</HintPath>
       </Reference>
       <Reference Include="mscorlib">
         <HintPath>..\References\mscorlib.dll</HintPath>

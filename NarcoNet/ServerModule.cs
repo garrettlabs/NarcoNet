@@ -1,4 +1,5 @@
 using System.Net.Http;
+using System.Text;
 
 using NarcoNet.Models;
 using NarcoNet.Utilities;
@@ -141,6 +142,34 @@ public class ServerModule(Version pluginVersion)
     internal async Task<List<string>> GetListExclusions()
     {
         return Json.Deserialize<List<string>>(await GetJsonTask("/narconet/exclusions"));
+    }
+
+    internal async Task<List<string>> GetIgnoredProfiles()
+    {
+        return Json.Deserialize<List<string>>(await GetJsonTask("/narconet/ignored-profiles"));
+    }
+
+    internal async Task NotifyProfileBypass(string profileId)
+    {
+        try
+        {
+            using HttpClient client = new();
+            client.DefaultRequestHeaders.Add("narconet-version", pluginVersion.ToString());
+            client.Timeout = TimeSpan.FromSeconds(5);
+
+            string json = Newtonsoft.Json.JsonConvert.SerializeObject(new { ProfileId = profileId });
+            using StringContent content = new(json, Encoding.UTF8, "application/json");
+            using HttpResponseMessage response = await client.PostAsync($"{RequestHandler.Host}/narconet/profile-bypass", content);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                NarcoPlugin.Logger.LogWarning($"Failed to notify server of NarcoNet profile bypass: {(int)response.StatusCode} {response.ReasonPhrase}");
+            }
+        }
+        catch (Exception e)
+        {
+            NarcoPlugin.Logger.LogWarning($"Failed to notify server of NarcoNet profile bypass: {e.GetType().Name}: {e.Message}");
+        }
     }
 
     internal async Task<Dictionary<string, Dictionary<string, ModFile>>> GetRemoteHashes(List<SyncPath> paths)

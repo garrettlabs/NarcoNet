@@ -14,5 +14,28 @@ When a player connects, NarcoNet will check the servers Mod List and compare it 
 - Lightweight, no-nonsense,  p2p protocol.
 - Zero tolerance for desyncs.
 
+## `config.yaml` usage
+NarcoNet loads `config.yaml` from the NarcoNet server mod directory under `user/mods/*narconet*`. Use `ignoredProfiles` to skip NarcoNet sync for specific SPT profiles, such as test or admin profiles:
+
+```yaml
+syncPaths:
+  - ../BepInEx/plugins
+  - path: user/mods
+    name: Server mods
+    enabled: true
+    enforced: true
+    silent: false
+    restartRequired: true
+
+ignoredProfiles:
+  - profile-one
+  - user/profiles/profile-two.json
+
+exclusions:
+  - user/mods/**/config.json
+```
+
+`ignoredProfiles` entries can be bare profile IDs, profile JSON file names, or profile paths; NarcoNet normalizes them to the active profile ID before deciding whether to bypass sync.
+
 ## Philosophy
 > You run your own operation. NarcoNet just keeps your crew supplied.

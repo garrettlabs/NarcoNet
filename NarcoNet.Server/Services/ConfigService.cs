@@ -60,6 +60,10 @@ public class ConfigService
                                                  silent: false            # If true, updates without showing UI
                                                  restartRequired: false   # If true, prompts client to restart after update
 
+                                             # Ignored profiles bypass NarcoNet hash checks and downloads.
+                                             # Use SPT profile identifiers/file stems, not nicknames.
+                                             ignoredProfiles: []
+
                                              # Exclusions prevent specific files/patterns from being synced
                                              #
                                              # Glob Pattern Examples:
@@ -190,7 +194,7 @@ public class ConfigService
             await File.WriteAllTextAsync(configPath, DefaultYamlConfig);
         }
 
-        (List<SyncPath> rawSyncPaths, List<string> exclusions) = await LoadConfigFileAsync(configPath);
+        (List<SyncPath> rawSyncPaths, List<string> exclusions, List<string> ignoredProfiles) = await LoadConfigFileAsync(configPath);
 
         ValidateConfig(rawSyncPaths, exclusions, configPath);
 
@@ -219,7 +223,8 @@ public class ConfigService
         return new NarcoNetConfig
         {
             SyncPaths = syncPaths,
-            Exclusions = exclusions
+            Exclusions = exclusions,
+            IgnoredProfiles = ignoredProfiles
         };
     }
 
@@ -248,7 +253,7 @@ public class ConfigService
     /// <summary>
     /// Load config file based on extension
     /// </summary>
-    private async Task<(List<SyncPath> syncPaths, List<string> exclusions)> LoadConfigFileAsync(string configPath)
+    private async Task<(List<SyncPath> syncPaths, List<string> exclusions, List<string> ignoredProfiles)> LoadConfigFileAsync(string configPath)
     {
         string extension = Path.GetExtension(configPath).ToLowerInvariant();
         string configText = await File.ReadAllTextAsync(configPath);
@@ -264,7 +269,7 @@ public class ConfigService
     /// <summary>
     /// Load YAML configuration
     /// </summary>
-    private (List<SyncPath>, List<string>) LoadYamlConfig(string yamlContent)
+    private (List<SyncPath>, List<string>, List<string>) LoadYamlConfig(string yamlContent)
     {
         IDeserializer deserializer = new DeserializerBuilder()
             .WithNamingConvention(CamelCaseNamingConvention.Instance)
@@ -353,18 +358,20 @@ public class ConfigService
         }
 
         List<string> exclusions = config.Exclusions ?? [];
+        List<string> ignoredProfiles = config.IgnoredProfiles ?? [];
 
-        return (syncPaths, exclusions);
+        return (syncPaths, exclusions, ignoredProfiles);
     }
 
     /// <summary>
     /// Load JSON configuration
     /// </summary>
-    private (List<SyncPath>, List<string>) LoadJsonConfig(string jsonContent)
+    private (List<SyncPath>, List<string>, List<string>) LoadJsonConfig(string jsonContent)
     {
         JsonNode? jsonNode = JsonNode.Parse(jsonContent);
         JsonArray? syncPathsNode = jsonNode?["syncPaths"]?.AsArray();
         JsonArray? exclusionsNode = jsonNode?["exclusions"]?.AsArray();
+        JsonArray? ignoredProfilesNode = jsonNode?["ignoredProfiles"]?.AsArray();
 
         var rawSyncPaths = new List<SyncPath>();
         if (syncPathsNode != null)
@@ -412,7 +419,19 @@ public class ConfigService
             }
         }
 
-        return (rawSyncPaths, exclusions);
+        var ignoredProfiles = new List<string>();
+        if (ignoredProfilesNode != null)
+        {
+            foreach (JsonNode? node in ignoredProfilesNode)
+            {
+                if (node is JsonValue)
+                {
+                    ignoredProfiles.Add(node.GetValue<string>());
+                }
+            }
+        }
+
+        return (rawSyncPaths, exclusions, ignoredProfiles);
     }
 
     /// <summary>
@@ -465,6 +484,7 @@ public class ConfigService
         // ReSharper disable UnusedAutoPropertyAccessor.Local
         public List<object>? SyncPaths { get; set; }
         public List<string>? Exclusions { get; set; }
+        public List<string>? IgnoredProfiles { get; set; }
         // ReSharper restore UnusedAutoPropertyAccessor.Local
     }
 }

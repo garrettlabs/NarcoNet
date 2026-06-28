@@ -387,6 +387,27 @@ public class NarcoPlugin : BaseUnityPlugin, IDisposable
         Application.Quit();
     }
 
+    private static string? GetActiveProfileId()
+    {
+        try
+        {
+            if (!Singleton<EFT.TarkovApplication>.Instantiated)
+            {
+                return null;
+            }
+
+            var session = Singleton<EFT.TarkovApplication>.Instance?.Session;
+            return ProfileBypass.NormalizeProfileIdentifier(session?.Profile?.Id);
+        }
+        catch (Exception e)
+        {
+#if NARCONET_DEBUG_LOGGING
+            Logger.LogDebug($"Could not evaluate active profile for NarcoNet bypass: {e.GetType().Name}: {e.Message}");
+#endif
+            return null;
+        }
+    }
+
     /// <summary>
     ///     Main plugin initialization coroutine - fetches server config and checks for updates
     /// </summary>
@@ -472,6 +493,19 @@ public class NarcoPlugin : BaseUnityPlugin, IDisposable
             );
         }
 
+        Logger.LogDebug("Requesting ignored profiles...");
+        var ignoredProfiles = new List<string>();
+        Task<List<string>> ignoredProfilesTask = _server.GetIgnoredProfiles();
+        yield return new WaitUntil(() => ignoredProfilesTask is { IsCompleted: true });
+        try
+        {
+            ignoredProfiles = ignoredProfilesTask.Result ?? [];
+        }
+        catch (Exception e)
+        {
+            Logger.LogWarning($"Failed to get ignored profiles: {e.GetType().Name}: {e.Message}. Continuing normal NarcoNet sync.");
+        }
+
         Logger.LogDebug("Loading previous sync data...");
         try
         {
@@ -524,6 +558,23 @@ public class NarcoPlugin : BaseUnityPlugin, IDisposable
 
         Logger.LogDebug("Waiting for UI to initialize...");
         yield return new WaitUntil(() => Singleton<CommonUI>.Instantiated);
+
+        string? activeProfileId = GetActiveProfileId();
+        if (ProfileBypass.ShouldBypass(activeProfileId, ignoredProfiles))
+        {
+            Task notifyBypassTask = _server.NotifyProfileBypass(activeProfileId!);
+            yield return new WaitUntil(() => notifyBypassTask.IsCompleted);
+
+            Logger.LogInfo($"NarcoNet sync bypassed for configured profile '{activeProfileId}'.");
+            yield break;
+        }
+
+#if NARCONET_DEBUG_LOGGING
+        if (ignoredProfiles.Count > 0 && string.IsNullOrEmpty(activeProfileId))
+        {
+            Logger.LogDebug("Ignored profiles are configured, but the active profile could not be evaluated. Continuing normal NarcoNet sync.");
+        }
+#endif
 
         Logger.LogDebug("Hashing local files...");
         if (exclusions == null)

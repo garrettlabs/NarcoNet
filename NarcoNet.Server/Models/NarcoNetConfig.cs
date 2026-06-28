@@ -9,4 +9,5 @@ public record NarcoNetConfig
 {
     public required List<SyncPath> SyncPaths { get; init; }
     public required List<string> Exclusions { get; init; }
+    public required List<string> IgnoredProfiles { get; init; }
 }

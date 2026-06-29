@@ -187,4 +187,48 @@ public class SyncTests
         List<Regex> exclusions = [Glob.CreateNoEnd("BepInEx/plugins/spt")];
         Assert.True(Sync.IsExcluded(exclusions, @"BepInEx\plugins\spt\core.dll"));
     }
+
+    [Fact]
+    public void GetRemovedFiles_SingleFileSyncPath_PreservedWhenServerReportsIt_RemovedWhenReportEmpty()
+    {
+        // Issue #9 regression (client symptom): a single-file managed-DLL syncPath must
+        // not be flagged for deletion when the server correctly reports it. The wrongful
+        // deletion only happens when the server lists the file as absent (empty report) —
+        // which the server-side SyncService.GetFilesInDirectoryAsync fix prevents.
+        const string syncPath = "EscapeFromTarkov_Data/Managed/Unity.VectorGraphics.dll";
+
+        var syncPaths = new List<SyncPath>
+        {
+            new(Path: syncPath, Name: "DynamicMaps managed DLL", Enabled: true, Enforced: false)
+        };
+
+        var localModFiles = new SyncPathModFiles
+        {
+            [syncPath] = new Dictionary<string, ModFile>
+            {
+                [syncPath] = new ModFile("hash123", Directory: false)
+            }
+        };
+
+        var emptyServerReport = new SyncPathModFiles
+        {
+            [syncPath] = new Dictionary<string, ModFile>()
+        };
+
+        var correctServerReport = new SyncPathModFiles
+        {
+            [syncPath] = new Dictionary<string, ModFile>
+            {
+                [syncPath] = new ModFile("hash123", Directory: false)
+            }
+        };
+
+        // Empty server report (pre-fix server behaviour) => file wrongly flagged for removal
+        var removedWhenEmpty = Sync.GetRemovedFiles(syncPaths, localModFiles, emptyServerReport);
+        Assert.Contains(syncPath, removedWhenEmpty[syncPath]);
+
+        // Correct server report (post-fix server behaviour) => file preserved
+        var removedWhenReported = Sync.GetRemovedFiles(syncPaths, localModFiles, correctServerReport);
+        Assert.DoesNotContain(syncPath, removedWhenReported[syncPath]);
+    }
 }

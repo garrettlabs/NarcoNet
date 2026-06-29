@@ -1,3 +1,8 @@
+using Microsoft.Extensions.Logging.Abstractions;
+
+using NarcoNet.Server.Models;
+using NarcoNet.Server.Services;
+using NarcoNet.Server.Utilities;
 using NarcoNet.Utilities;
 
 using Xunit.Abstractions;
@@ -152,5 +157,46 @@ public class SyncPathFilteringTests(ITestOutputHelper testOutputHelper)
         Assert.DoesNotContain(filtered, sp => sp.Path == "SPT/user/mods");
 
         testOutputHelper.WriteLine("\n✓ TEST PASSED.: Real world scenario works correctly\n");
+    }
+
+    [Fact]
+    public async Task HashModFilesAsync_SingleFileSyncPath_IsListedByServer()
+    {
+        // Issue #9 regression (server root cause): a syncPath that names a single file
+        // (a managed DLL such as DynamicMaps' Unity.VectorGraphics.dll) must be enumerated
+        // by the server. Before the fix, GetFilesInDirectoryAsync hit the !Directory.Exists
+        // guard first and returned empty, so the client saw the file as server-removed and
+        // deleted it. An absolute syncPath bypasses ComputeHashesAsync's baseDir join and
+        // points straight at a temp file we control.
+        string tempDir = Path.Combine(Path.GetTempPath(), "narconet-issue9-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        string singleFile = Path.Combine(tempDir, "Unity.VectorGraphics.dll");
+        await File.WriteAllTextAsync(singleFile, "managed dll bytes");
+
+        try
+        {
+            var config = new NarcoNetConfig
+            {
+                SyncPaths =
+                [
+                    new(Path: singleFile, Name: "Single managed DLL", Enabled: true, Enforced: false)
+                ],
+                Exclusions = []
+            };
+
+            var service = new SyncService(NullLogger<SyncService>.Instance);
+
+            Dictionary<string, Dictionary<string, ModFile>> result =
+                await service.HashModFilesAsync(config.SyncPaths, config);
+
+            string key = PathHelper.ToUnixPath(singleFile);
+            Assert.True(result.ContainsKey(key), "Server result is missing the single-file syncPath key");
+            // Pre-fix this dictionary was empty, so the client treated the file as removed.
+            Assert.NotEmpty(result[key]);
+        }
+        finally
+        {
+            Directory.Delete(tempDir, recursive: true);
+        }
     }
 }

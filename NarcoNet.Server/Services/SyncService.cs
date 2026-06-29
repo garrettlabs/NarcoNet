@@ -43,16 +43,19 @@ public class SyncService
     /// </summary>
     private async Task<List<string>> GetFilesInDirectoryAsync(string baseDir, string dir, NarcoNetConfig config)
     {
+        // Single-file syncPath: return the file itself before the missing-directory
+        // guard. A single managed DLL is not a directory, so checking !Directory.Exists
+        // first returns empty and the client treats the file as server-removed and
+        // deletes it (issue #9). File.Exists must be evaluated first.
+        if (File.Exists(dir))
+        {
+            return [dir];
+        }
+
         if (!Directory.Exists(dir))
         {
             _logger.LogWarning("Directory '{Dir}' does not exist", dir);
             return [];
-        }
-
-        FileInfo fileInfo = new(dir);
-        if (fileInfo.Attributes.HasFlag(FileAttributes.Normal) || File.Exists(dir))
-        {
-            return [dir];
         }
 
         List<string> files =

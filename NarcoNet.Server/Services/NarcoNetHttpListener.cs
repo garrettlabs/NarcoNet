@@ -69,6 +69,12 @@ public class NarcoNetHttpListener(
                 case "/narconet/exclusions":
                     await HandleGetExclusions(context);
                     break;
+                case "/narconet/ignored-profiles":
+                    await HandleGetIgnoredProfiles(context);
+                    break;
+                case "/narconet/profile-bypass":
+                    await HandleProfileBypassNotification(context);
+                    break;
                 case "/narconet/hashes":
                     await HandleGetHashes(context);
                     break;
@@ -156,6 +162,51 @@ public class NarcoNetHttpListener(
         await context.Response.StartAsync();
         await context.Response.CompleteAsync();
     }
+
+    private async Task HandleGetIgnoredProfiles(HttpContext context)
+    {
+        string json = JsonSerializer.Serialize(_config!.IgnoredProfiles);
+        byte[] jsonBytes = System.Text.Encoding.UTF8.GetBytes(json);
+
+        context.Response.ContentType = "application/json";
+        context.Response.StatusCode = 200;
+        await context.Response.Body.WriteAsync(jsonBytes);
+        await context.Response.StartAsync();
+        await context.Response.CompleteAsync();
+    }
+
+    private async Task HandleProfileBypassNotification(HttpContext context)
+    {
+        ProfileBypassNotification? notification = null;
+        try
+        {
+            notification = await JsonSerializer.DeserializeAsync<ProfileBypassNotification>(context.Request.Body);
+        }
+        catch (JsonException e)
+        {
+            logger.LogWarning(e, "Received malformed NarcoNet profile bypass notification");
+        }
+
+        string? profileId = ProfileBypass.NormalizeProfileIdentifier(notification?.ProfileId);
+        if (string.IsNullOrEmpty(profileId))
+        {
+            context.Response.StatusCode = 400;
+            await context.Response.StartAsync();
+            await context.Response.CompleteAsync();
+            return;
+        }
+
+        logger.LogInformation("Ignoring NarcoNet sync for configured profile {ProfileId}", profileId);
+
+        context.Response.ContentType = "application/json";
+        context.Response.StatusCode = 200;
+        byte[] jsonBytes = System.Text.Encoding.UTF8.GetBytes("{\"ok\":true}");
+        await context.Response.Body.WriteAsync(jsonBytes);
+        await context.Response.StartAsync();
+        await context.Response.CompleteAsync();
+    }
+
+    private sealed record ProfileBypassNotification(string? ProfileId);
 
     private async Task HandleGetHashes(HttpContext context)
     {

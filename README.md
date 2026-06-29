@@ -19,7 +19,32 @@ to keep everything clean and consistent.
   - Automatic mod/config sync between server and client.
   - Enforce paths the client cannot opt-out
   - Optional paths the client can choose to ignore (NarcoNet_Data/Exclusions.json)
+  - Per-profile sync bypass (`ignoredProfiles`) for test/admin profiles.
   - Zero tolerance for desyncs.
+
+## Ignored profiles
+
+Use `ignoredProfiles` in the server's `config.yaml` to skip NarcoNet sync entirely for
+specific SPT profiles — for example test or admin profiles that should not receive synced
+mods. The client short-circuits before any hashing or downloads when the active profile
+matches, and notifies the server so the bypass is recorded in the server log.
+
+```yaml
+syncPaths:
+  - BepInEx/plugins
+  - SPT/user/mods
+
+ignoredProfiles:
+  - 64f1a2b3c4d5e6f7a8b9c0d1
+  - user/profiles/admin.json
+
+exclusions:
+  - "**/*.log"
+```
+
+`ignoredProfiles` entries can be bare profile IDs, profile JSON file names, or profile
+paths; NarcoNet normalizes them to the profile file stem before matching the active
+profile ID. An empty list (the default) leaves sync behaviour unchanged.
 
 ## Philosophy
 

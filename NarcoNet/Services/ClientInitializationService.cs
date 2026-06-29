@@ -17,7 +17,7 @@ public class ClientInitializationService : IClientInitializationService
     {
         foreach (SyncPath syncPath in syncPaths)
         {
-            if (Path.IsPathRooted(syncPath.Path))
+            if (Path.IsPathRooted(syncPath.Path) || Regex.IsMatch(syncPath.Path, @"^[a-zA-Z]:[\\/]"))
             {
                 return $"Paths must be relative to the game root! Invalid path '{syncPath}'";
             }

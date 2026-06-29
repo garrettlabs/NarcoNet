@@ -200,6 +200,38 @@ public class ServerModule
         return Json.Deserialize<List<string>>(await GetJsonTask("/narconet/exclusions"));
     }
 
+    internal async Task<List<string>> GetIgnoredProfiles()
+    {
+        return Json.Deserialize<List<string>>(await GetJsonTask("/narconet/ignored-profiles"));
+    }
+
+    /// <summary>
+    ///     Notify the server that the active profile is configured to bypass NarcoNet sync,
+    ///     so server logs record the ignored profile. Best-effort: failures never block the client.
+    /// </summary>
+    internal async Task NotifyProfileBypass(string profileId)
+    {
+        try
+        {
+            string json = Newtonsoft.Json.JsonConvert.SerializeObject(new { ProfileId = profileId });
+            using var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            using HttpResponseMessage response =
+                await _httpClient.PostAsync($"{RequestHandler.Host}/narconet/profile-bypass", content, cts.Token);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                NarcoPlugin.Logger.LogWarning(
+                    $"Failed to notify server of NarcoNet profile bypass: {(int)response.StatusCode} {response.ReasonPhrase}");
+            }
+        }
+        catch (Exception e)
+        {
+            NarcoPlugin.Logger.LogWarning(
+                $"Failed to notify server of NarcoNet profile bypass: {e.GetType().Name}: {e.Message}");
+        }
+    }
+
     internal async Task<Dictionary<string, Dictionary<string, ModFile>>> GetRemoteHashes(List<SyncPath> paths)
     {
         if (paths.Count == 0)

@@ -16,7 +16,7 @@ public class ConfigServiceTests
     [Fact]
     public void DefaultYamlConfig_Deserializes_Successfully()
     {
-        (List<SyncPath> syncPaths, List<string> exclusions) =
+        (List<SyncPath> syncPaths, List<string> exclusions, _) =
             _configService.LoadYamlConfig(ConfigService.DefaultYamlConfig);
 
         // Assert — template must produce non-empty lists
@@ -29,7 +29,7 @@ public class ConfigServiceTests
     [Fact]
     public void DefaultYamlConfig_Contains_Expected_SyncPaths()
     {
-        (List<SyncPath> syncPaths, _) =
+        (List<SyncPath> syncPaths, _, _) =
             _configService.LoadYamlConfig(ConfigService.DefaultYamlConfig);
 
         // The default template ships with BepInEx/plugins and BepInEx/patchers enabled
@@ -43,7 +43,7 @@ public class ConfigServiceTests
     [Fact]
     public void DefaultYamlConfig_Contains_Expected_Exclusions()
     {
-        (_, List<string> exclusions) =
+        (_, List<string> exclusions, _) =
             _configService.LoadYamlConfig(ConfigService.DefaultYamlConfig);
 
         // SPT core must always be excluded
@@ -57,7 +57,7 @@ public class ConfigServiceTests
     [Fact]
     public void DefaultYamlConfig_SyncPath_Defaults_Match_Record_Defaults()
     {
-        (List<SyncPath> syncPaths, _) =
+        (List<SyncPath> syncPaths, _, _) =
             _configService.LoadYamlConfig(ConfigService.DefaultYamlConfig);
 
         // Simple string-format sync paths should get the record defaults
@@ -66,5 +66,34 @@ public class ConfigServiceTests
         Assert.False(plugins.Enforced);
         Assert.False(plugins.Silent);
         Assert.True(plugins.RestartRequired);
+    }
+
+    [Fact]
+    public void DefaultYamlConfig_Has_Empty_IgnoredProfiles()
+    {
+        (_, _, List<string> ignoredProfiles) =
+            _configService.LoadYamlConfig(ConfigService.DefaultYamlConfig);
+
+        Assert.NotNull(ignoredProfiles);
+        Assert.Empty(ignoredProfiles);
+    }
+
+    [Fact]
+    public void LoadYamlConfig_Parses_Configured_IgnoredProfiles()
+    {
+        const string yaml = """
+                            syncPaths:
+                              - BepInEx/plugins
+                            exclusions: []
+                            ignoredProfiles:
+                              - 64f1a2b3c4d5e6f7a8b9c0d1
+                              - testers/headless.json
+                            """;
+
+        (_, _, List<string> ignoredProfiles) = _configService.LoadYamlConfig(yaml);
+
+        Assert.Equal(2, ignoredProfiles.Count);
+        Assert.Contains("64f1a2b3c4d5e6f7a8b9c0d1", ignoredProfiles);
+        Assert.Contains("testers/headless.json", ignoredProfiles);
     }
 }

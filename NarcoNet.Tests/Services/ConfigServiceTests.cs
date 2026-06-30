@@ -1,128 +1,70 @@
+using Microsoft.Extensions.Logging.Abstractions;
+
 using NarcoNet.Server.Services;
 using NarcoNet.Utilities;
 
 namespace NarcoNet.Tests.Services;
 
-public class ConfigServiceTests : IDisposable
+/// <summary>
+///     Tests for the server-side ConfigService
+///     YAML template should be valid and parsable.
+/// </summary>
+public class ConfigServiceTests
 {
-    private readonly string _tempDirectory = Path.Combine(Path.GetTempPath(), $"NarcoNetConfigTests-{Guid.NewGuid():N}");
+    private readonly ConfigService _configService = new(NullLogger<ConfigService>.Instance);
 
-    public ConfigServiceTests()
+    [Fact]
+    public void DefaultYamlConfig_Deserializes_Successfully()
     {
-        Directory.CreateDirectory(_tempDirectory);
+        (List<SyncPath> syncPaths, List<string> exclusions) =
+            _configService.LoadYamlConfig(ConfigService.DefaultYamlConfig);
+
+        // Assert — template must produce non-empty lists
+        Assert.NotNull(syncPaths);
+        Assert.NotEmpty(syncPaths);
+        Assert.NotNull(exclusions);
+        Assert.NotEmpty(exclusions);
     }
 
     [Fact]
-    public async Task LoadConfigAsync_WhenYamlHasIgnoredProfiles_LoadsProfileIds()
+    public void DefaultYamlConfig_Contains_Expected_SyncPaths()
     {
-        // Arrange
-        await File.WriteAllTextAsync(Path.Combine(_tempDirectory, "config.yaml"), """
-            syncPaths:
-              - ../BepInEx/plugins
-            ignoredProfiles:
-              - profile-one
-              - user/profiles/profile-two.json
-            exclusions: []
-            """);
+        (List<SyncPath> syncPaths, _) =
+            _configService.LoadYamlConfig(ConfigService.DefaultYamlConfig);
 
-        var service = new ConfigService();
+        // The default template ships with BepInEx/plugins and BepInEx/patchers enabled
+        Assert.Contains(syncPaths, sp => sp.Path == "BepInEx/plugins" && sp.Enabled);
+        Assert.Contains(syncPaths, sp => sp.Path == "BepInEx/patchers" && sp.Enabled);
 
-        // Act
-        var config = await service.LoadConfigAsync(_tempDirectory);
-
-        // Assert
-        Assert.Equal(["profile-one", "user/profiles/profile-two.json"], config.IgnoredProfiles);
-        Assert.Contains(config.SyncPaths, syncPath => syncPath.Path == "../BepInEx/plugins");
+        // The optional server mods path is present but disabled
+        Assert.Contains(syncPaths, sp => sp.Path == "SPT/user/mods" && !sp.Enabled);
     }
 
     [Fact]
-    public async Task LoadConfigAsync_WhenYamlOmitsIgnoredProfiles_DefaultsToEmptyList()
+    public void DefaultYamlConfig_Contains_Expected_Exclusions()
     {
-        // Arrange
-        await File.WriteAllTextAsync(Path.Combine(_tempDirectory, "config.yaml"), """
-            syncPaths:
-              - ../BepInEx/plugins
-            exclusions: []
-            """);
+        (_, List<string> exclusions) =
+            _configService.LoadYamlConfig(ConfigService.DefaultYamlConfig);
 
-        var service = new ConfigService();
+        // SPT core must always be excluded
+        Assert.Contains("BepInEx/plugins/spt", exclusions);
+        Assert.Contains("BepInEx/patchers/spt-prepatch.dll", exclusions);
 
-        // Act
-        var config = await service.LoadConfigAsync(_tempDirectory);
-
-        // Assert
-        Assert.NotNull(config.IgnoredProfiles);
-        Assert.Empty(config.IgnoredProfiles);
+        // NarcoNet client plugin excluded (manual update by default)
+        Assert.Contains("BepInEx/plugins/MadManBeavis-NarcoNet", exclusions);
     }
 
     [Fact]
-    public async Task LoadConfigAsync_WhenJsonHasIgnoredProfiles_LoadsProfileIds()
+    public void DefaultYamlConfig_SyncPath_Defaults_Match_Record_Defaults()
     {
-        // Arrange
-        await File.WriteAllTextAsync(Path.Combine(_tempDirectory, "config.json"), """
-            {
-              "syncPaths": ["../BepInEx/plugins"],
-              "ignoredProfiles": ["profile-one", "profile-two"],
-              "exclusions": []
-            }
-            """);
+        (List<SyncPath> syncPaths, _) =
+            _configService.LoadYamlConfig(ConfigService.DefaultYamlConfig);
 
-        var service = new ConfigService();
-
-        // Act
-        var config = await service.LoadConfigAsync(_tempDirectory);
-
-        // Assert
-        Assert.Equal(["profile-one", "profile-two"], config.IgnoredProfiles);
-    }
-
-    public void Dispose()
-    {
-        if (Directory.Exists(_tempDirectory))
-        {
-            Directory.Delete(_tempDirectory, recursive: true);
-        }
-    }
-}
-
-public class ProfileBypassTests
-{
-    [Theory]
-    [InlineData("profile-one", "profile-one")]
-    [InlineData("profile-one", "profile-one.json")]
-    [InlineData("profile-one", "user/profiles/profile-one.json")]
-    [InlineData("profile-one", "user\\profiles\\profile-one.json")]
-    public void ShouldBypass_WhenConfiguredIdentifierMatchesProfileStem_ReturnsTrue(
-        string activeProfileId,
-        string configuredProfileId)
-    {
-        // Act
-        bool shouldBypass = ProfileBypass.ShouldBypass(activeProfileId, [configuredProfileId]);
-
-        // Assert
-        Assert.True(shouldBypass);
-    }
-
-    [Fact]
-    public void ShouldBypass_WhenConfiguredIdentifierDoesNotMatch_ReturnsFalse()
-    {
-        // Act
-        bool shouldBypass = ProfileBypass.ShouldBypass("profile-one", ["profile-two"]);
-
-        // Assert
-        Assert.False(shouldBypass);
-    }
-
-    [Theory]
-    [InlineData(null)]
-    [InlineData("")]
-    [InlineData("   ")]
-    public void ShouldBypass_WhenActiveProfileIsMissing_ReturnsFalse(string? activeProfileId)
-    {
-        // Act
-        bool shouldBypass = ProfileBypass.ShouldBypass(activeProfileId, ["profile-one"]);
-
-        // Assert
-        Assert.False(shouldBypass);
+        // Simple string-format sync paths should get the record defaults
+        SyncPath plugins = syncPaths.First(sp => sp.Path == "BepInEx/plugins");
+        Assert.True(plugins.Enabled);
+        Assert.False(plugins.Enforced);
+        Assert.False(plugins.Silent);
+        Assert.True(plugins.RestartRequired);
     }
 }

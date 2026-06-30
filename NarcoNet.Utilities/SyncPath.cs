@@ -1,4 +1,4 @@
-﻿namespace NarcoNet.Utilities;
+namespace NarcoNet.Utilities;
 
 public record SyncPath(
     string Path,

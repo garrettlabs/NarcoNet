@@ -1,0 +1,141 @@
+[tools]
+dotnet = "9.0"
+
+[env]
+DEPLOY_AFTER_BUILD = "false"
+CONFIGURATION = "Release"
+DOTNET_COMMON = "-c {{env.CONFIGURATION}} -p:DeployAfterBuild={{env.DEPLOY_AFTER_BUILD}}"
+DOTNET_NODEPS = "--no-dependencies -c {{env.CONFIGURATION}} -p:DeployAfterBuild={{env.DEPLOY_AFTER_BUILD}}"
+
+# ── Individual project builds ─────────────────────────────────────────────────
+
+[tasks."build:utilities"]
+description = "Build NarcoNet.Utilities (shared library, net472)"
+run = "dotnet build NarcoNet.Utilities/NarcoNet.Utilities.csproj $DOTNET_COMMON"
+
+[tasks."build:ui"]
+description = "Build NarcoNet.UI (shared UI components, net472)"
+depends = ["build:utilities"]
+run = "dotnet build NarcoNet.UI/NarcoNet.UI.csproj $DOTNET_NODEPS"
+
+[tasks."build:server"]
+description = "Build NarcoNet.Server (SPT server mod, net9.0)"
+depends = ["build:utilities"]
+run = "dotnet build NarcoNet.Server/NarcoNet.Server.csproj $DOTNET_NODEPS"
+
+[tasks."build:client"]
+description = "Build NarcoNet client (BepInEx plugin, net472)"
+depends = ["build:utilities", "build:ui"]
+run = "dotnet build NarcoNet/NarcoNet.csproj $DOTNET_NODEPS"
+
+# ── Tests ──────────────────────────────────────────────────────────────────────
+
+[tasks."build:tests"]
+description = "Build NarcoNet.Tests (net9.0)"
+depends = ["build:client", "build:server"]
+run = "dotnet build NarcoNet.Tests/NarcoNet.Tests.csproj $DOTNET_NODEPS"
+
+[tasks.test]
+description = "Run all tests"
+depends = ["build:tests"]
+run = "dotnet test NarcoNet.Tests/NarcoNet.Tests.csproj --no-build -c $CONFIGURATION"
+
+# ── Aggregate builds ──────────────────────────────────────────────────────────
+
+[tasks.build]
+description = "Build all projects"
+depends = ["build:client", "build:server"]
+
+[tasks."build:all"]
+description = "Build all projects including tests"
+depends = ["build", "build:tests"]
+
+# ── Lint ───────────────────────────────────────────────────────────────────────
+
+[tasks.lint]
+description = "Check code formatting and style"
+run = [
+    "dotnet format NarcoNet.Utilities/NarcoNet.Utilities.csproj --verify-no-changes",
+    "dotnet format NarcoNet.UI/NarcoNet.UI.csproj --verify-no-changes",
+    "dotnet format NarcoNet/NarcoNet.csproj --verify-no-changes",
+    "dotnet format NarcoNet.Server/NarcoNet.Server.csproj --verify-no-changes",
+]
+
+# ── Clean & Package ───────────────────────────────────────────────────────────
+
+[tasks.clean]
+description = "Clean all build outputs"
+run = [
+    "rm -rf Build/ dist/",
+    "dotnet clean NarcoNet.Utilities/NarcoNet.Utilities.csproj -c $CONFIGURATION -q",
+    "dotnet clean NarcoNet.UI/NarcoNet.UI.csproj -c $CONFIGURATION -q",
+    "dotnet clean NarcoNet/NarcoNet.csproj -c $CONFIGURATION -q",
+    "dotnet clean NarcoNet.Server/NarcoNet.Server.csproj -c $CONFIGURATION -q",
+    "dotnet clean NarcoNet.Tests/NarcoNet.Tests.csproj -c $CONFIGURATION -q",
+]
+
+[tasks.package]
+description = "Build and package release artifacts into dist/"
+depends = ["build:client", "build:server"]
+run = '''
+set -e
+
+VERSION=$(xmllint --xpath 'string(//VersionPrefix)' Directory.Build.props 2>/dev/null \
+  || sed -n 's/.*<VersionPrefix>\(.*\)<.*/\1/p' Directory.Build.props | tr -d ' ')
+STAGING="dist/staging"
+rm -rf dist/
+mkdir -p "$STAGING/BepInEx/plugins/MadManBeavis-NarcoNet"
+mkdir -p "$STAGING/SPT/user/mods/NarcoNet-Server"
+
+# Client plugin DLLs
+cp NarcoNet/bin/Release/NarcoNet.dll                     "$STAGING/BepInEx/plugins/MadManBeavis-NarcoNet/"
+cp NarcoNet.UI/bin/Release/NarcoNet.UI.dll               "$STAGING/BepInEx/plugins/MadManBeavis-NarcoNet/"
+cp NarcoNet.Utilities/bin/Release/net472/NarcoNet.Utilities.dll "$STAGING/BepInEx/plugins/MadManBeavis-NarcoNet/"
+
+# Server mod
+cp NarcoNet.Server/Build/SPT/user/mods/NarcoNet-Server/*.dll  "$STAGING/SPT/user/mods/NarcoNet-Server/" 2>/dev/null || true
+cp NarcoNet.Server/Build/SPT/user/mods/NarcoNet-Server/*.json "$STAGING/SPT/user/mods/NarcoNet-Server/" 2>/dev/null || true
+
+# Create archive (flat — no root directory)
+cd "$STAGING"
+zip -qr "../../dist/NarcoNet-v${VERSION}.zip" .
+echo "Packaged: dist/NarcoNet-v${VERSION}.zip"
+'''
+
+[tasks.restore]
+description = "Restore NuGet packages for all projects"
+run = [
+    "dotnet restore NarcoNet.Utilities/NarcoNet.Utilities.csproj",
+    "dotnet restore NarcoNet.UI/NarcoNet.UI.csproj",
+    "dotnet restore NarcoNet/NarcoNet.csproj",
+    "dotnet restore NarcoNet.Server/NarcoNet.Server.csproj",
+    "dotnet restore NarcoNet.Tests/NarcoNet.Tests.csproj",
+]
+
+# ── Game References NuGet Package ────────────────────────────────────────────
+
+[tasks."gamerefs:pack"]
+description = "Pack game DLLs into a NuGet package (pass TARKOV_DIR or defaults to ../../)"
+run = "bash GameReferences/pack.sh ${TARKOV_DIR:-../../}"
+
+[tasks."gamerefs:push"]
+description = "Push game references NuGet package to GitLab registry"
+run = '''
+set -e
+if [ -z "${GITLAB_SECRET_TOKEN:-}" ]; then
+    echo "ERROR: Set GITLAB_SECRET_TOKEN to a GitLab personal access token with api scope"
+    exit 1
+fi
+if [ -z "${GITLAB_PROJECT_ID:-}" ]; then
+    echo "ERROR: Set GITLAB_PROJECT_ID to your GitLab project ID"
+    exit 1
+fi
+NUPKG=$(ls -1 GameReferences/bin/*.nupkg 2>/dev/null | head -1)
+if [ -z "$NUPKG" ]; then
+    echo "ERROR: No .nupkg found in GameReferences/bin/ — run 'mise run gamerefs:pack' first"
+    exit 1
+fi
+echo "Pushing $NUPKG to GitLab..."
+dotnet nuget push "$NUPKG" --source "https://gitlab.com/api/v4/projects/${GITLAB_PROJECT_ID}/packages/nuget/index.json" --api-key "$GITLAB_SECRET_TOKEN"
+echo "Done!"
+'''

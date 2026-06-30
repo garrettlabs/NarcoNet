@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.Text;
+using System.Text.RegularExpressions;
 
 using Microsoft.Extensions.Logging;
 
@@ -17,13 +19,23 @@ namespace NarcoNet.Server.Services;
 public class SyncService
 {
     private readonly SemaphoreSlim _limiter = new(1024, 1024);
+    private readonly SemaphoreSlim _hashCacheLock = new(1, 1);
     private readonly ILogger<SyncService> _logger;
-    private readonly ChangeLogService _changeLogService;
+    private volatile Dictionary<string, Dictionary<string, ModFile>>? _hashCache;
 
-    public SyncService(ILogger<SyncService> logger, ChangeLogService changeLogService)
+    public SyncService(ILogger<SyncService> logger)
     {
         _logger = logger;
-        _changeLogService = changeLogService;
+    }
+
+    /// <summary>
+    ///     Invalidate the hash cache so the next request recomputes fresh hashes.
+    ///     Called by FileWatcherService when files change on disk.
+    /// </summary>
+    public void InvalidateHashCache()
+    {
+        _hashCache = null;
+        _logger.LogDebug("Hash cache invalidated");
     }
 
     /// <summary>
@@ -52,7 +64,7 @@ public class SyncService
         foreach (FileInfo file in dirInfo.GetFiles())
         {
             string filePath = file.FullName;
-            if (IsExcluded(filePath, config.Exclusions, baseDir))
+            if (IsExcluded(filePath, config.CompiledExclusions, baseDir))
             {
                 continue;
             }
@@ -64,13 +76,21 @@ public class SyncService
         foreach (DirectoryInfo subDir in dirInfo.GetDirectories())
         {
             string subDirPath = subDir.FullName;
-            if (IsExcluded(subDirPath, config.Exclusions, baseDir))
+            if (IsExcluded(subDirPath, config.CompiledExclusions, baseDir))
             {
                 continue;
             }
 
             List<string> subFiles = await GetFilesInDirectoryAsync(baseDir, subDirPath, config);
-            files.AddRange(subFiles);
+            if (subFiles.Count == 0)
+            {
+                // Include empty directories so clients don't treat them as removed
+                files.Add(subDirPath);
+            }
+            else
+            {
+                files.AddRange(subFiles);
+            }
         }
 
         return files;
@@ -79,7 +99,7 @@ public class SyncService
     /// <summary>
     ///     Check if a path is excluded based on exclusion patterns
     /// </summary>
-    private bool IsExcluded(string path, List<string> exclusions, string? baseDir = null)
+    private bool IsExcluded(string path, List<Regex> compiledExclusions, string? baseDir = null)
     {
         // Convert absolute path to relative path from server root for pattern matching
         string relativePath;
@@ -93,7 +113,7 @@ public class SyncService
         }
 
         string unixPath = PathHelper.ToUnixPath(relativePath);
-        return exclusions.Any(pattern => GlobMatcher.Matches(unixPath, pattern));
+        return compiledExclusions.Any(regex => regex.IsMatch(unixPath));
     }
 
     /// <summary>
@@ -115,7 +135,7 @@ public class SyncService
                 await _limiter.WaitAsync(cancellationToken);
                 try
                 {
-                    string hash = await FileHasher.HashFileAsync(file, cancellationToken);
+                    string hash = await FileHash.HashFile(file);
                     return new ModFile(hash);
                 }
                 finally
@@ -145,18 +165,72 @@ public class SyncService
         NarcoNetConfig config,
         CancellationToken cancellationToken = default)
     {
+        // Return cached results if available (snapshot to local to avoid TOCTOU with InvalidateHashCache)
+        var cache = _hashCache;
+        if (cache != null)
+        {
+            // Filter to only requested sync paths
+            Dictionary<string, Dictionary<string, ModFile>> filtered = new();
+            foreach (SyncPath syncPath in syncPaths)
+            {
+                string key = PathHelper.ToUnixPath(syncPath.Path);
+                if (cache.TryGetValue(key, out var cachedFiles))
+                {
+                    filtered[key] = cachedFiles;
+                }
+            }
+            _logger.LogDebug("Returning cached hashes for {Count} paths", filtered.Count);
+            return filtered;
+        }
+
+        // Only one hash computation at a time; concurrent waiters share the result
+        await _hashCacheLock.WaitAsync(cancellationToken);
+        try
+        {
+            // Double-check after acquiring lock (snapshot again)
+            cache = _hashCache;
+            if (cache != null)
+            {
+                Dictionary<string, Dictionary<string, ModFile>> filtered = new();
+                foreach (SyncPath syncPath in syncPaths)
+                {
+                    string key = PathHelper.ToUnixPath(syncPath.Path);
+                    if (cache.TryGetValue(key, out var cachedFiles))
+                    {
+                        filtered[key] = cachedFiles;
+                    }
+                }
+                return filtered;
+            }
+
+            Dictionary<string, Dictionary<string, ModFile>> result = await ComputeHashesAsync(syncPaths, config, cancellationToken);
+            _hashCache = result;
+            WriteHashDump(result, config.Exclusions);
+            return result;
+        }
+        finally
+        {
+            _hashCacheLock.Release();
+        }
+    }
+
+    private async Task<Dictionary<string, Dictionary<string, ModFile>>> ComputeHashesAsync(
+        List<SyncPath> syncPaths,
+        NarcoNetConfig config,
+        CancellationToken cancellationToken)
+    {
         Dictionary<string, Dictionary<string, ModFile>> result = new();
         ConcurrentDictionary<string, byte> processedFiles = new();
         DateTime startTime = DateTime.UtcNow;
 
-        string baseDir = Directory.GetCurrentDirectory();
+        string baseDir = Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), ".."));
 #if NARCONET_DEBUG_LOGGING
-        _logger.LogDebug($"HashModFilesAsync: Starting to hash files in {syncPaths.Count} sync paths");
+        _logger.LogDebug($"ComputeHashesAsync: Starting to hash files in {syncPaths.Count} sync paths");
 #endif
 
         foreach (SyncPath syncPath in syncPaths)
         {
-            string fullPath = Path.GetFullPath(syncPath.Path);
+            string fullPath = Path.GetFullPath(Path.Combine(baseDir, syncPath.Path));
             List<string> files = await GetFilesInDirectoryAsync(baseDir, fullPath, config);
 #if NARCONET_DEBUG_LOGGING
             _logger.LogDebug($"  {syncPath.Path}: Found {files.Count} files");
@@ -168,16 +242,16 @@ public class SyncService
             {
                 // Convert absolute path to relative path from server root
                 string relativePath = Path.GetRelativePath(baseDir, file);
-                string winPath = PathHelper.ToWindowsPath(relativePath);
-                if (processedFiles.TryAdd(winPath, 0))
+                string unixPath = PathHelper.ToUnixPath(relativePath);
+                if (processedFiles.TryAdd(unixPath, 0))
                 {
                     ModFile modFile = await BuildModFileAsync(file, ct);
-                    filesResult[winPath] = modFile;
+                    filesResult[unixPath] = modFile;
                 }
             });
 
             // Use the original syncPath.Path as dictionary key to match client expectations
-            result[PathHelper.ToWindowsPath(syncPath.Path)] = new Dictionary<string, ModFile>(filesResult);
+            result[PathHelper.ToUnixPath(syncPath.Path)] = new Dictionary<string, ModFile>(filesResult);
         }
 
         double elapsed = (DateTime.UtcNow - startTime).TotalMilliseconds;
@@ -187,16 +261,65 @@ public class SyncService
     }
 
     /// <summary>
+    ///     Write a diagnostic dump of all hashed files to NarcoNet_KnownFiles.txt
+    /// </summary>
+    private void WriteHashDump(Dictionary<string, Dictionary<string, ModFile>> hashes, List<string> exclusions)
+    {
+        try
+        {
+            string gameRoot = Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), ".."));
+            string dumpPath = Path.Combine(Directory.GetCurrentDirectory(), "NarcoNet_KnownFiles.txt");
+            var sb = new StringBuilder();
+            sb.AppendLine($"# NarcoNet Server — Known Files Dump");
+            sb.AppendLine($"# Generated: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC");
+            sb.AppendLine($"# Game Root: {gameRoot}");
+            sb.AppendLine($"#");
+            sb.AppendLine($"# Exclusions ({exclusions.Count}):");
+            foreach (string ex in exclusions)
+                sb.AppendLine($"#   {ex}");
+            sb.AppendLine($"#");
+            sb.AppendLine($"# Format: [SyncPath] | [RelativePath] | [Hash] | [Type]");
+            sb.AppendLine($"# ─────────────────────────────────────────────────────────");
+
+            int totalFiles = 0;
+            foreach (var (syncPathKey, files) in hashes)
+            {
+                sb.AppendLine($"#");
+                sb.AppendLine($"# SyncPath: {syncPathKey} ({files.Count} entries)");
+                sb.AppendLine($"#");
+
+                foreach (var (filePath, modFile) in files.OrderBy(f => f.Key, StringComparer.OrdinalIgnoreCase))
+                {
+                    string type = modFile.Directory ? "DIR" : "FILE";
+                    string hash = modFile.Directory ? "--" : modFile.Hash;
+                    sb.AppendLine($"{syncPathKey} | {filePath} | {hash} | {type}");
+                    totalFiles++;
+                }
+            }
+
+            sb.AppendLine($"#");
+            sb.AppendLine($"# Total: {totalFiles} entries across {hashes.Count} sync paths");
+
+            File.WriteAllText(dumpPath, sb.ToString());
+            _logger.LogInformation("Wrote known files dump to {Path} ({Count} entries)", dumpPath, totalFiles);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to write known files dump");
+        }
+    }
+
+    /// <summary>
     ///     Sanitize a download path to ensure it's within allowed sync paths
     /// </summary>
     public string SanitizeDownloadPath(string file, List<SyncPath> syncPaths)
     {
-        string baseDir = Directory.GetCurrentDirectory();
-        string normalized = Path.GetFullPath(Path.Combine(baseDir, file));
+        string gameRoot = Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), ".."));
+        string normalized = Path.GetFullPath(Path.Combine(gameRoot, file));
 
         foreach (SyncPath syncPath in syncPaths)
         {
-            string fullPath = Path.GetFullPath(Path.Combine(baseDir, syncPath.Path));
+            string fullPath = Path.GetFullPath(Path.Combine(gameRoot, syncPath.Path));
 
             // Check if the normalized file path is within the sync path
             // GetRelativePath returns a path without ".." if the file is within the base
@@ -210,243 +333,4 @@ public class SyncService
         throw new UnauthorizedAccessException("Path must match one of the configured sync paths");
     }
 
-    /// <summary>
-    ///     Build a filesystem snapshot from current directory state
-    /// </summary>
-    private async Task<FileSystemSnapshot> BuildSnapshotAsync(
-        List<SyncPath> syncPaths,
-        NarcoNetConfig config,
-        long sequenceNumber,
-        CancellationToken cancellationToken = default)
-    {
-        Dictionary<string, FileMetadata> files = new();
-        string baseDir = Directory.GetCurrentDirectory();
-
-        foreach (SyncPath syncPath in syncPaths)
-        {
-            string fullPath = Path.GetFullPath(syncPath.Path);
-            List<string> fileList = await GetFilesInDirectoryAsync(baseDir, fullPath, config);
-
-            foreach (string file in fileList)
-            {
-                string relativePath = Path.GetRelativePath(baseDir, file);
-                string winPath = PathHelper.ToWindowsPath(relativePath);
-
-                FileInfo fileInfo = new(file);
-                bool isDirectory = fileInfo.Attributes.HasFlag(FileAttributes.Directory) || !File.Exists(file);
-
-                string hash = "";
-                long size = 0;
-                DateTime lastModified = DateTime.MinValue;
-
-                if (!isDirectory && File.Exists(file))
-                {
-                    // Only hash if file is not too large (optimization)
-                    size = fileInfo.Length;
-                    lastModified = fileInfo.LastWriteTimeUtc;
-                }
-
-                files[winPath] = new FileMetadata
-                {
-                    Hash = hash,
-                    Size = size,
-                    LastModified = lastModified,
-                    IsDirectory = isDirectory
-                };
-            }
-        }
-
-        return new FileSystemSnapshot
-        {
-            Files = files,
-            SequenceNumber = sequenceNumber,
-            Timestamp = DateTime.UtcNow
-        };
-    }
-
-    /// <summary>
-    ///     Detect changes between old and new snapshots, generating changelog entries
-    /// </summary>
-    private async Task<List<FileChangeEntry>> DetectChangesAsync(
-        FileSystemSnapshot? oldSnapshot,
-        FileSystemSnapshot newSnapshot,
-        long startSequence,
-        CancellationToken cancellationToken = default)
-    {
-        List<FileChangeEntry> changes = [];
-        long currentSequence = startSequence;
-
-        Dictionary<string, FileMetadata> oldFiles = oldSnapshot?.Files ?? new Dictionary<string, FileMetadata>();
-        Dictionary<string, FileMetadata> newFiles = newSnapshot.Files;
-
-        // Find added and modified files
-        foreach (var (filePath, newMetadata) in newFiles)
-        {
-            if (newMetadata.IsDirectory)
-            {
-                continue; // Skip directories
-            }
-
-            if (!oldFiles.TryGetValue(filePath, out FileMetadata? oldMetadata))
-            {
-                // File was added
-                string hash = await HashSingleFileAsync(filePath, cancellationToken);
-                changes.Add(new FileChangeEntry
-                {
-                    SequenceNumber = ++currentSequence,
-                    Operation = ChangeOperation.Add,
-                    FilePath = filePath,
-                    Hash = hash,
-                    Timestamp = DateTime.UtcNow,
-                    FileSize = newMetadata.Size,
-                    LastModified = newMetadata.LastModified
-                });
-            }
-            else
-            {
-                // Check if file was modified (compare size and timestamp)
-                if (oldMetadata.Size != newMetadata.Size || 
-                    oldMetadata.LastModified != newMetadata.LastModified)
-                {
-                    string hash = await HashSingleFileAsync(filePath, cancellationToken);
-                    
-                    // Only add to changelog if hash actually changed
-                    if (hash != oldMetadata.Hash)
-                    {
-                        changes.Add(new FileChangeEntry
-                        {
-                            SequenceNumber = ++currentSequence,
-                            Operation = ChangeOperation.Modify,
-                            FilePath = filePath,
-                            Hash = hash,
-                            Timestamp = DateTime.UtcNow,
-                            FileSize = newMetadata.Size,
-                            LastModified = newMetadata.LastModified
-                        });
-                    }
-                }
-            }
-        }
-
-        // Find deleted files
-        foreach (var (filePath, oldMetadata) in oldFiles)
-        {
-            if (oldMetadata.IsDirectory)
-            {
-                continue; // Skip directories
-            }
-
-            if (!newFiles.ContainsKey(filePath))
-            {
-                changes.Add(new FileChangeEntry
-                {
-                    SequenceNumber = ++currentSequence,
-                    Operation = ChangeOperation.Delete,
-                    FilePath = filePath,
-                    Hash = "",
-                    Timestamp = DateTime.UtcNow,
-                    FileSize = 0,
-                    LastModified = DateTime.MinValue
-                });
-            }
-        }
-
-        return changes;
-    }
-
-    /// <summary>
-    ///     Hash a single file by its relative path
-    /// </summary>
-    private async Task<string> HashSingleFileAsync(string relativePath, CancellationToken cancellationToken = default)
-    {
-        string baseDir = Directory.GetCurrentDirectory();
-        string fullPath = Path.Combine(baseDir, relativePath);
-
-        if (!File.Exists(fullPath))
-        {
-            return "";
-        }
-
-        await _limiter.WaitAsync(cancellationToken);
-        try
-        {
-            return await FileHasher.HashFileAsync(fullPath, cancellationToken);
-        }
-        finally
-        {
-            _limiter.Release();
-        }
-    }
-
-    /// <summary>
-    ///     Detect and log all file changes since last server run (called on startup)
-    /// </summary>
-    public async Task DetectStartupChangesAsync(
-        List<SyncPath> syncPaths,
-        NarcoNetConfig config,
-        CancellationToken cancellationToken = default)
-    {
-        DateTime startTime = DateTime.UtcNow;
-        _logger.LogInformation("Detecting file changes since last startup...");
-
-        // Load existing changelog and snapshot
-        FileChangeLog changeLog = await _changeLogService.LoadChangeLogAsync(cancellationToken);
-        FileSystemSnapshot? lastSnapshot = await _changeLogService.LoadSnapshotAsync(cancellationToken);
-
-        // Build current snapshot (without hashes initially for speed)
-        FileSystemSnapshot currentSnapshot = await BuildSnapshotAsync(
-            syncPaths, 
-            config, 
-            changeLog.CurrentSequence,
-            cancellationToken);
-
-        // Detect changes between snapshots
-        List<FileChangeEntry> changes = await DetectChangesAsync(
-            lastSnapshot,
-            currentSnapshot,
-            changeLog.CurrentSequence,
-            cancellationToken);
-
-        if (changes.Count > 0)
-        {
-            _logger.LogInformation("Detected {Count} file changes", changes.Count);
-            
-            // Log summary
-            int added = changes.Count(c => c.Operation == ChangeOperation.Add);
-            int modified = changes.Count(c => c.Operation == ChangeOperation.Modify);
-            int deleted = changes.Count(c => c.Operation == ChangeOperation.Delete);
-            _logger.LogInformation("Changes: {Added} added, {Modified} modified, {Deleted} deleted", 
-                added, modified, deleted);
-
-            // Append changes to changelog
-            await _changeLogService.AppendChangesAsync(changes, cancellationToken);
-
-            // Update snapshot with hashes for changed files
-            foreach (var change in changes.Where(c => c.Operation != ChangeOperation.Delete))
-            {
-                if (currentSnapshot.Files.TryGetValue(change.FilePath, out FileMetadata? metadata))
-                {
-                    currentSnapshot.Files[change.FilePath] = metadata with { Hash = change.Hash };
-                }
-            }
-        }
-        else
-        {
-            _logger.LogInformation("No file changes detected");
-        }
-
-        // Save updated snapshot
-        FileSystemSnapshot updatedSnapshot = currentSnapshot with
-        {
-            SequenceNumber = changeLog.CurrentSequence + changes.Count,
-            Timestamp = DateTime.UtcNow
-        };
-        await _changeLogService.SaveSnapshotAsync(updatedSnapshot, cancellationToken);
-
-        // Prune old changelog entries
-        await _changeLogService.PruneOldEntriesAsync(30, cancellationToken);
-
-        double elapsed = (DateTime.UtcNow - startTime).TotalMilliseconds;
-        _logger.LogInformation("Change detection completed in {Elapsed:F0}ms", elapsed);
-    }
 }

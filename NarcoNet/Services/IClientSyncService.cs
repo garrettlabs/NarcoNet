@@ -1,4 +1,3 @@
-using NarcoNet.Models;
 using NarcoNet.Utilities;
 
 namespace NarcoNet.Services;
@@ -17,7 +16,6 @@ public interface IClientSyncService
     void AnalyzeModFiles(
         SyncPathModFiles localModFiles,
         SyncPathModFiles remoteModFiles,
-        SyncPathModFiles previousSync,
         List<SyncPath> enabledSyncPaths,
         out SyncPathFileList addedFiles,
         out SyncPathFileList updatedFiles,
@@ -36,6 +34,7 @@ public interface IClientSyncService
         bool deleteRemovedFiles,
         string pendingUpdatesDir,
         IProgress<(int current, int total)> progress,
+        IProgress<(long current, long total)> byteProgress,
         CancellationToken cancellationToken);
 
     /// <summary>
@@ -72,44 +71,4 @@ public interface IClientSyncService
         List<SyncPath> enabledSyncPaths,
         bool deleteRemovedFiles);
 
-    /// <summary>
-    ///     Writes sync data to persistent storage
-    /// </summary>
-    void WriteNarcoNetData(
-        SyncPathModFiles remoteModFiles,
-        SyncPathFileList removedFiles,
-        List<SyncPath> enabledSyncPaths,
-        bool deleteRemovedFiles);
-
-    /// <summary>
-    ///     Writes an update manifest for the updater exe to process
-    /// </summary>
-    void WriteUpdateManifest(
-        SyncPathFileList addedFiles,
-        SyncPathFileList updatedFiles,
-        SyncPathFileList directoriesToCreate,
-        SyncPathFileList removedFiles,
-        List<SyncPath> enabledSyncPaths,
-        bool deleteRemovedFiles,
-        string pendingUpdatesDir,
-        SyncPathModFiles remoteModFiles);
-
-    /// <summary>
-    ///     Load the client's last known sync state
-    /// </summary>
-    ClientSyncState? LoadSyncState();
-
-    /// <summary>
-    ///     Save the client's current sync state
-    /// </summary>
-    void SaveSyncState(long sequence);
-
-    /// <summary>
-    ///     Apply incremental changes from the server changelog
-    /// </summary>
-    Task<(SyncPathFileList added, SyncPathFileList updated, SyncPathFileList removed)> 
-        ApplyIncrementalChangesAsync(
-            ChangesResponse changesResponse,
-            List<SyncPath> enabledSyncPaths,
-            CancellationToken cancellationToken = default);
 }

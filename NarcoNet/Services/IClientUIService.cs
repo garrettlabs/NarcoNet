@@ -1,4 +1,9 @@
+using NarcoNet.UI;
+using NarcoNet.Utilities;
+
 namespace NarcoNet.Services;
+
+using SyncPathModFiles = Dictionary<string, Dictionary<string, ModFile>>;
 
 /// <summary>
 ///     Service interface for managing client UI windows and user interactions
@@ -13,7 +18,7 @@ public interface IClientUIService
     /// <summary>
     ///     Shows the update confirmation window with the list of changes
     /// </summary>
-    void ShowUpdateWindow(List<string> optional, List<string> required, Action onAccept, Action? onSkip);
+    void ShowUpdateWindow(List<string> optional, List<string> required, Action<bool> onAccept, Action? onSkip, bool hasRemovedFiles);
 
     /// <summary>
     ///     Shows the download progress window
@@ -24,6 +29,11 @@ public interface IClientUIService
     ///     Updates the download progress
     /// </summary>
     void UpdateProgress(int current, int total, Action? onCancel);
+
+    /// <summary>
+    ///     Updates the aggregate byte-level download progress
+    /// </summary>
+    void UpdateByteProgress(long current, long total);
 
     /// <summary>
     ///     Hides the progress window
@@ -54,4 +64,34 @@ public interface IClientUIService
     ///     Handles game UI visibility when update windows are shown
     /// </summary>
     void HandleGameUIVisibility(bool updateWindowsActive);
+
+    /// <summary>
+    ///     Shows the sync diagnostic overlay window
+    /// </summary>
+    void ShowDiagnosticWindow();
+
+    /// <summary>
+    ///     Updates a diagnostic step's status and state
+    /// </summary>
+    void UpdateDiagnosticStep(string stepKey, string status, DiagnosticState state);
+
+    /// <summary>
+    ///     Hides the sync diagnostic overlay window
+    /// </summary>
+    void HideDiagnosticWindow();
+
+    /// <summary>
+    ///     Shows the file comparison window with merged local and remote file data
+    /// </summary>
+    void ShowFileComparisonWindow(SyncPathModFiles localModFiles, SyncPathModFiles remoteModFiles);
+
+    /// <summary>
+    ///     Hides the file comparison window
+    /// </summary>
+    void HideFileComparisonWindow();
+
+    /// <summary>
+    ///     Sets the callback for the diagnostic window's "Show Files" button
+    /// </summary>
+    void SetDiagnosticShowFilesAction(Action? onShowFiles);
 }

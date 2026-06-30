@@ -41,7 +41,6 @@ public class ClientSyncServiceTests
                 ["file2.dll"] = new ModFile("hash3", false)  // Added
             }
         };
-        var previousSync = new SyncPathModFiles();
         var syncPaths = new List<SyncPath>
         {
             new("path1", "Path 1", true, false, false, true)
@@ -51,7 +50,6 @@ public class ClientSyncServiceTests
         service.AnalyzeModFiles(
             localFiles,
             remoteFiles,
-            previousSync,
             syncPaths,
             out var addedFiles,
             out var updatedFiles,
@@ -173,4 +171,5 @@ public class ClientSyncServiceTests
         // Assert
         Assert.Equal(2, count); // 1 file + 1 directory
     }
+
 }

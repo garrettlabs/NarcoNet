@@ -1,4 +1,4 @@
-﻿using NarcoNet.Utilities;
+using NarcoNet.Utilities;
 
 using UnityEngine;
 
@@ -23,7 +23,7 @@ public class UpdateWindow(
         Active = false;
     }
 
-    public void Draw(string updatesText, Action onAccept, Action? onDecline)
+    public void Draw(string updatesText, Action<bool> onAccept, Action? onDecline, bool hasRemovedFiles)
     {
         float screenWidth = Screen.width;
         float screenHeight = Screen.height;
@@ -35,7 +35,7 @@ public class UpdateWindow(
             windowHeight));
         if (onDecline != null)
         {
-            _alertBox.Draw(new Vector2(800f, 640f), updatesText, onAccept, onDecline);
+            _alertBox.Draw(new Vector2(800f, 640f), updatesText, onAccept, onDecline, hasRemovedFiles);
         }
 
         GUILayout.EndArea();
@@ -60,8 +60,9 @@ internal class UpdateBox(string title, string message, string continueText, stri
 
     private readonly UpdateButtonTooltip _updateButtonTooltip = new();
     private Vector2 _scrollPosition = Vector2.zero;
+    private bool _keepDeletedFiles;
 
-    public void Draw(Vector2 size, string updatesText, Action? onAccept, Action? onDecline)
+    public void Draw(Vector2 size, string updatesText, Action<bool>? onAccept, Action? onDecline, bool hasRemovedFiles)
     {
         Rect borderRect = GUILayoutUtility.GetRect(size.x, size.y);
 
@@ -82,8 +83,11 @@ internal class UpdateBox(string title, string message, string continueText, stri
         DrawGradientBox(alertRect, Colors.Dark.SetAlpha(0.95f), Colors.DarkMedium.SetAlpha(0.92f), false,
             CornerRadius - BorderThickness);
 
+        float checkboxHeight = hasRemovedFiles ? 36f : 0f;
+
         Rect infoRect = new(alertRect.x, alertRect.y + 24f, alertRect.width, 120f);
-        Rect scrollRect = new(alertRect.x + 16f, alertRect.y + 160f, alertRect.width - 32f, alertRect.height - 160f - 72f);
+        Rect scrollRect = new(alertRect.x + 16f, alertRect.y + 160f, alertRect.width - 32f, alertRect.height - 160f - 72f - checkboxHeight);
+        Rect checkboxRect = new(alertRect.x + 20f, alertRect.y + alertRect.height - 64f - checkboxHeight, alertRect.width - 40f, 28f);
         Rect actionsRect = new(alertRect.x, alertRect.y + alertRect.height - 64f, alertRect.width, 64f);
 
         GUIStyle titleStyle = new()
@@ -150,6 +154,27 @@ internal class UpdateBox(string title, string message, string continueText, stri
         GUI.Label(new Rect(20f, 20f, alertRect.width - 88f, scrollHeight), updatesText, scrollStyle);
         GUI.EndScrollView();
 
+        // Draw "Keep deleted files" checkbox when there are removals
+        if (hasRemovedFiles)
+        {
+            GUIStyle toggleStyle = new(GUI.skin.toggle)
+            {
+                fontSize = 16,
+                normal = { textColor = Colors.OffWhite },
+                hover = { textColor = Colors.White },
+                active = { textColor = Colors.White },
+                onNormal = { textColor = Colors.OffWhite },
+                onHover = { textColor = Colors.White },
+                onActive = { textColor = Colors.White },
+                alignment = TextAnchor.MiddleLeft,
+                padding = new RectOffset(24, 0, 0, 0)
+            };
+            _keepDeletedFiles = GUI.Toggle(
+                checkboxRect, _keepDeletedFiles,
+                new GUIContent("Keep deleted files", "Enforced deletions will still be applied."),
+                toggleStyle);
+        }
+
         // Add padding between buttons
         var buttonPadding = 12f;
         var buttonMargin = 16f;
@@ -176,7 +201,7 @@ internal class UpdateBox(string title, string message, string continueText, stri
             )
         )
         {
-            onAccept();
+            onAccept(_keepDeletedFiles);
         }
 
         Rect tooltipRect = new(Event.current.mousePosition.x + 2f, Event.current.mousePosition.y - 20f, 275f, 20f);

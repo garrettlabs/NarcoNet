@@ -31,9 +31,10 @@ public class ClientInitializationServiceTests
     {
         // Arrange
         var service = new ClientInitializationService();
+        var absolutePath = OperatingSystem.IsWindows() ? "C:\\absolute\\path" : "/absolute/path";
         var syncPaths = new List<SyncPath>
         {
-            new("C:\\absolute\\path", "Test Path", true, false, false, false)
+            new(absolutePath, "Test Path", true, false, false, false)
         };
         var serverRoot = Directory.GetCurrentDirectory();
 
@@ -42,11 +43,11 @@ public class ClientInitializationServiceTests
 
         // Assert
         Assert.NotNull(result);
-        Assert.Contains("relative to SPT server root", result);
+        Assert.Contains("relative to the game root", result);
     }
 
     [Fact]
-    public void ValidateSyncPaths_AllowsPathsWithParentDirectory()
+    public void ValidateSyncPaths_RejectsPathsWithParentDirectory()
     {
         // Arrange
         var service = new ClientInitializationService();
@@ -60,7 +61,8 @@ public class ClientInitializationServiceTests
         var result = service.ValidateSyncPaths(syncPaths, serverRoot);
 
         // Assert
-        Assert.Null(result);
+        Assert.NotNull(result);
+        Assert.Contains("must not contain '..'", result);
     }
 
     [Fact]

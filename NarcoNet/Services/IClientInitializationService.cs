@@ -18,20 +18,13 @@ public interface IClientInitializationService
     string? ValidateSyncPaths(List<SyncPath> syncPaths, string serverRoot);
 
     /// <summary>
-    ///     Loads previous sync data from disk
-    /// </summary>
-    /// <param name="previousSyncPath">Path to previous sync file</param>
-    /// <returns>Previous sync data, or empty dictionary if not found</returns>
-    SyncPathModFiles LoadPreviousSync(string previousSyncPath);
-
-    /// <summary>
-    ///     Loads local exclusions from disk, creating defaults for headless if needed
+    ///     Loads local exclusions from disk, creating a template file for headless clients on first run
     /// </summary>
     /// <param name="localExclusionsPath">Path to exclusions file</param>
     /// <param name="isHeadless">Whether running in headless mode</param>
-    /// <param name="defaultExclusions">Default exclusions for headless</param>
+    /// <param name="headlessExclusionTemplates">Initial exclusions written to disk for headless clients when no file exists</param>
     /// <returns>List of exclusion patterns</returns>
-    List<string> LoadLocalExclusions(string localExclusionsPath, bool isHeadless, List<string>? defaultExclusions);
+    List<string> LoadLocalExclusions(string localExclusionsPath, bool isHeadless, List<string>? headlessExclusionTemplates);
 
     /// <summary>
     ///     Builds remote mod files dictionary from server hashes

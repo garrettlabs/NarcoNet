@@ -24,10 +24,10 @@ public class ClientUIServiceTests
         var service = new ClientUIService();
         var optional = new List<string> { "file1.dll", "file2.dll" };
         var required = new List<string> { "file3.dll" };
-        Action onAccept = () => { };
+        Action<bool> onAccept = _ => { };
 
         // Act
-        service.ShowUpdateWindow(optional, required, onAccept, null);
+        service.ShowUpdateWindow(optional, required, onAccept, null, false);
 
         // Assert
         Assert.True(service.IsAnyWindowActive);

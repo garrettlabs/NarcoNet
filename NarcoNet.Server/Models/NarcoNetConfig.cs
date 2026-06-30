@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+
 using NarcoNet.Utilities;
 
 namespace NarcoNet.Server.Models;
@@ -9,5 +11,8 @@ public record NarcoNetConfig
 {
     public required List<SyncPath> SyncPaths { get; init; }
     public required List<string> Exclusions { get; init; }
-    public required List<string> IgnoredProfiles { get; init; }
+
+    private List<Regex>? _compiledExclusions;
+    public List<Regex> CompiledExclusions =>
+        _compiledExclusions ??= Exclusions.Select(Glob.CreateNoEnd).ToList();
 }

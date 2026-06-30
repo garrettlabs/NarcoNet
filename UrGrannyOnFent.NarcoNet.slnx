@@ -11,8 +11,6 @@
   <Project Path="NarcoNet.Server\NarcoNet.Server.csproj" Type="Classic C#" />
   <Project Path="NarcoNet.Tests\NarcoNet.Tests.csproj" Type="Classic C#" />
   <Project Path="NarcoNet.UI\NarcoNet.UI.csproj" Type="Classic C#" />
-  <Project Path="NarcoNet.Updater.Tests\NarcoNet.Updater.Tests.csproj" Type="Classic C#" />
-  <Project Path="NarcoNet.Updater\NarcoNet.Updater.csproj" Type="Classic C#" />
   <Project Path="NarcoNet.Utilities\NarcoNet.Utilities.csproj" />
   <Project Path="NarcoNet/NarcoNet.csproj" />
 </Solution>

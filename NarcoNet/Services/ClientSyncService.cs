@@ -1,8 +1,5 @@
 using BepInEx.Logging;
-using NarcoNet.Models;
-using NarcoNet.Updater.Models;
 using NarcoNet.Utilities;
-using SPT.Common.Utils;
 
 namespace NarcoNet.Services;
 
@@ -14,16 +11,10 @@ using SyncPathModFiles = Dictionary<string, Dictionary<string, ModFile>>;
 /// </summary>
 public class ClientSyncService(ManualLogSource logger, ServerModule serverModule) : IClientSyncService
 {
-    private static readonly string NarcoNetDir = Path.Combine(Directory.GetCurrentDirectory(), "NarcoNet_Data");
-    private static readonly string PreviousSyncPath = Path.Combine(NarcoNetDir, "PreviousSync.json");
-    private static readonly string RemovedFilesPath = Path.Combine(NarcoNetDir, "RemovedFiles.json");
-    private static readonly string SyncStatePath = Path.Combine(NarcoNetDir, "SyncState.json");
-
     /// <inheritdoc/>
     public void AnalyzeModFiles(
         SyncPathModFiles localModFiles,
         SyncPathModFiles remoteModFiles,
-        SyncPathModFiles previousSync,
         List<SyncPath> enabledSyncPaths,
         out SyncPathFileList addedFiles,
         out SyncPathFileList updatedFiles,
@@ -38,7 +29,6 @@ public class ClientSyncService(ManualLogSource logger, ServerModule serverModule
             enabledSyncPaths,
             localModFiles,
             remoteModFiles,
-            previousSync,
             out addedFiles,
             out updatedFiles,
             out removedFiles,
@@ -66,6 +56,7 @@ public class ClientSyncService(ManualLogSource logger, ServerModule serverModule
         bool deleteRemovedFiles,
         string pendingUpdatesDir,
         IProgress<(int current, int total)> progress,
+        IProgress<(long current, long total)> byteProgress,
         CancellationToken cancellationToken)
     {
         if (!Directory.Exists(pendingUpdatesDir))
@@ -98,18 +89,23 @@ public class ClientSyncService(ManualLogSource logger, ServerModule serverModule
                         if (File.Exists(fullPath))
                         {
                             File.Delete(fullPath);
-                            logger.LogDebug($"Deleted file: {file}");
+                            logger.LogInfo($"Deleted: {file}");
+                        }
+                        else if (Directory.Exists(fullPath))
+                        {
+                            Directory.Delete(fullPath, true);
+                            logger.LogInfo($"Deleted directory: {file}");
                         }
                     }
                     catch (Exception e)
                     {
-                        logger.LogError($"Failed to delete file '{file}': {e.Message}");
+                        logger.LogError($"Failed to delete '{file}': {e.Message}");
                     }
                 }
             }
         }
-        // Also delete files for enforced paths regardless of deleteRemovedFiles setting
-        foreach (SyncPath syncPath in enabledSyncPaths.Where(sp => sp.Enforced && !sp.RestartRequired))
+        // Also delete files for enforced paths when deleteRemovedFiles is off
+        foreach (SyncPath syncPath in enabledSyncPaths.Where(sp => sp.Enforced && !sp.RestartRequired && !deleteRemovedFiles))
         {
             if (!filesToRemove.TryGetValue(syncPath.Path, out var removeFiles))
             {
@@ -124,31 +120,78 @@ public class ClientSyncService(ManualLogSource logger, ServerModule serverModule
                     if (File.Exists(fullPath))
                     {
                         File.Delete(fullPath);
-                        logger.LogDebug($"Deleted enforced file: {file}");
+                        logger.LogInfo($"Deleted (enforced): {file}");
+                    }
+                    else if (Directory.Exists(fullPath))
+                    {
+                        Directory.Delete(fullPath, true);
+                        logger.LogInfo($"Deleted directory (enforced): {file}");
                     }
                 }
                 catch (Exception e)
                 {
-                    logger.LogError($"Failed to delete enforced file '{file}': {e.Message}");
+                    logger.LogError($"Failed to delete '{file}': {e.Message}");
                 }
             }
         }
 
-        // Create directories (only for non-restart-required paths)
-        foreach (SyncPath syncPath in enabledSyncPaths.Where(sp => !sp.RestartRequired))
+        // Create directories for ALL paths (directories are never locked, no restart needed)
+        foreach (SyncPath syncPath in enabledSyncPaths)
         {
-            foreach (string dir in directoriesToCreate[syncPath.Path])
+            if (!directoriesToCreate.TryGetValue(syncPath.Path, out var dirsToCreate))
+                continue;
+
+            foreach (string dir in dirsToCreate)
             {
                 try
                 {
                     string fullPath = Path.Combine(Directory.GetCurrentDirectory(), dir);
                     Directory.CreateDirectory(fullPath);
+                    logger.LogInfo($"Created directory: {dir}");
                 }
                 catch (Exception e)
                 {
                     logger.LogError($"Failed to create directory: {e}");
                 }
             }
+
+            // Clear handled entries so they don't count toward restart
+            if (syncPath.RestartRequired)
+                dirsToCreate.Clear();
+        }
+
+        // Delete empty directory entries for restart-required paths immediately
+        // (empty dirs are never locked — dirs with files are left for the restart path)
+        foreach (SyncPath syncPath in enabledSyncPaths.Where(sp => sp.RestartRequired))
+        {
+            if (!(deleteRemovedFiles || syncPath.Enforced))
+                continue;
+
+            if (!filesToRemove.TryGetValue(syncPath.Path, out var removeFiles))
+                continue;
+
+            List<string> handledDirs = [];
+            foreach (string file in removeFiles)
+            {
+                string fullPath = Path.Combine(Directory.GetCurrentDirectory(), file);
+                if (Directory.Exists(fullPath) && !Directory.EnumerateFileSystemEntries(fullPath).Any())
+                {
+                    try
+                    {
+                        Directory.Delete(fullPath);
+                        logger.LogInfo($"Deleted empty directory: {file}");
+                        handledDirs.Add(file);
+                    }
+                    catch (Exception e)
+                    {
+                        logger.LogError($"Failed to delete directory '{file}': {e.Message}");
+                    }
+                }
+            }
+
+            // Remove handled directories so they don't count toward restart
+            foreach (string dir in handledDirs)
+                removeFiles.Remove(dir);
         }
 
         // Prepare download tasks
@@ -171,35 +214,53 @@ public class ClientSyncService(ManualLogSource logger, ServerModule serverModule
         }
 #endif
 
+        // Aggregate byte progress counters shared across all concurrent downloads
+        long bytesDownloaded = 0;
+        long bytesTotal = 0;
+
         List<Task> downloadTasks = enabledSyncPaths
             .SelectMany(syncPath =>
                 filesToDownload.TryGetValue(syncPath.Path, out List<string>? pathFilesToDownload)
                     ? pathFilesToDownload.Select(file =>
                     {
-                        // For restart-required files, download to PendingUpdates with normalized path
+                        // Per-file byte progress that aggregates into the shared counters
+                        bool fileSizeRegistered = false;
+                        long previousBytes = 0;
+                        var fileByteProgress = new Progress<(long bytesDownloaded, long totalBytes)>(p =>
+                        {
+                            if (!fileSizeRegistered)
+                            {
+                                fileSizeRegistered = true;
+                                Interlocked.Add(ref bytesTotal, p.totalBytes);
+                            }
+                            long delta = p.bytesDownloaded - previousBytes;
+                            previousBytes = p.bytesDownloaded;
+                            if (delta > 0)
+                            {
+                                Interlocked.Add(ref bytesDownloaded, delta);
+                            }
+                            byteProgress.Report((Interlocked.Read(ref bytesDownloaded), Interlocked.Read(ref bytesTotal)));
+                        });
+
                         if (syncPath.RestartRequired)
                         {
-                            // Strip ..\ prefix for local storage in PendingUpdates
-                            string localPath = file.StartsWith("..\\", StringComparison.OrdinalIgnoreCase)
-                                ? file.Substring(3)
-                                : file;
-
-                            // Still request the original file path from server
+                            // For restart-required files, download to PendingUpdates
                             return serverModule.DownloadFile(
                                 file,
                                 pendingUpdatesDir,
                                 limiter,
                                 cancellationToken,
-                                localPath
+                                fileByteProgress
                             );
                         }
 
-                        // For non-restart files, download directly to current directory
+                        // For non-restart files, download directly to game root
                         return serverModule.DownloadFile(
                             file,
                             Directory.GetCurrentDirectory(),
                             limiter,
-                            cancellationToken
+                            cancellationToken,
+                            fileByteProgress
                         );
                     })
                     : []
@@ -208,6 +269,9 @@ public class ClientSyncService(ManualLogSource logger, ServerModule serverModule
 
         int totalDownloadCount = downloadTasks.Count;
         var downloadCount = 0;
+
+        // Report initial progress so the UI shows the total immediately
+        progress.Report((0, totalDownloadCount));
 
         // Download files with progress reporting
         while (downloadTasks.Count > 0 && !cancellationToken.IsCancellationRequested)
@@ -296,227 +360,6 @@ public class ClientSyncService(ManualLogSource logger, ServerModule serverModule
             && (!(deleteRemovedFiles || syncPath.Enforced) || removedFiles[syncPath.Path].Count == 0)
             && createdDirectories[syncPath.Path].Count == 0
         );
-    }
-
-    /// <inheritdoc/>
-    public void WriteNarcoNetData(
-        SyncPathModFiles remoteModFiles,
-        SyncPathFileList removedFiles,
-        List<SyncPath> enabledSyncPaths,
-        bool deleteRemovedFiles)
-    {
-        VFS.WriteTextFile(PreviousSyncPath, Json.Serialize(remoteModFiles));
-
-        if (enabledSyncPaths.Any(syncPath =>
-            (deleteRemovedFiles || syncPath.Enforced) && removedFiles[syncPath.Path].Count != 0))
-        {
-            VFS.WriteTextFile(RemovedFilesPath, Json.Serialize(removedFiles.SelectMany(kvp => kvp.Value).ToList()));
-        }
-    }
-
-    /// <summary>
-    ///     Writes an update manifest for the updater exe to process
-    /// </summary>
-    public void WriteUpdateManifest(
-        SyncPathFileList addedFiles,
-        SyncPathFileList updatedFiles,
-        SyncPathFileList directoriesToCreate,
-        SyncPathFileList removedFiles,
-        List<SyncPath> enabledSyncPaths,
-        bool deleteRemovedFiles,
-        string pendingUpdatesDir,
-        SyncPathModFiles remoteModFiles)
-    {
-        UpdateManifest manifest = new()
-        {
-            RemoteSyncData = remoteModFiles.ToDictionary(
-                kvp => kvp.Key,
-                kvp => kvp.Value.ToDictionary(
-                    fileKvp => fileKvp.Key,
-                    fileKvp => (object)fileKvp.Value
-                )
-            )
-        };
-
-        // Add directory creation operations (only for restart-required paths)
-        foreach (SyncPath syncPath in enabledSyncPaths.Where(sp => sp.RestartRequired))
-        {
-            foreach (string dir in directoriesToCreate[syncPath.Path])
-            {
-                manifest.Operations.Add(new UpdateOperation
-                {
-                    Type = OperationType.CreateDirectory,
-                    Destination = dir
-                });
-            }
-        }
-
-        // Add file copy operations
-        foreach (SyncPath syncPath in enabledSyncPaths.Where(sp => sp.RestartRequired))
-        {
-            foreach (string file in addedFiles[syncPath.Path].Concat(updatedFiles[syncPath.Path]))
-            {
-                // File paths contain ..\ because they're relative to NarcoNet_Data
-                // Source is relative to PendingUpdates, Destination is relative to game root
-                // Both need the ..\ stripped since updater works from game root
-                string normalizedPath = file.StartsWith("..\\", StringComparison.OrdinalIgnoreCase)
-                    ? file.Substring(3)
-                    : file;
-
-                manifest.Operations.Add(new UpdateOperation
-                {
-                    Type = OperationType.CopyFile,
-                    Source = normalizedPath,  // Relative to PendingUpdates
-                    Destination = normalizedPath  // Relative to game root
-                });
-            }
-        }
-
-        // Add file deletion operations
-        foreach (SyncPath syncPath in enabledSyncPaths)
-        {
-            if ((deleteRemovedFiles || syncPath.Enforced) && removedFiles[syncPath.Path].Count > 0)
-            {
-                foreach (string file in removedFiles[syncPath.Path])
-                {
-                    manifest.Operations.Add(new UpdateOperation
-                    {
-                        Type = OperationType.DeleteFile,
-                        Destination = file
-                    });
-                }
-            }
-        }
-
-        string manifestPath = Path.Combine(NarcoNetDir, NarcoNetConstants.UpdateManifestFileName);
-        VFS.WriteTextFile(manifestPath, Json.Serialize(manifest));
-
-        logger.LogDebug($"Wrote update manifest with {manifest.Operations.Count} operations");
-    }
-
-    /// <summary>
-    ///     Load the client's last known sync state
-    /// </summary>
-    public ClientSyncState? LoadSyncState()
-    {
-        if (!File.Exists(SyncStatePath))
-        {
-            return null;
-        }
-
-        try
-        {
-            string json = VFS.ReadTextFile(SyncStatePath);
-            return Json.Deserialize<ClientSyncState>(json);
-        }
-        catch (Exception e)
-        {
-            logger.LogWarning($"Failed to load sync state: {e.Message}");
-            return null;
-        }
-    }
-
-    /// <summary>
-    ///     Save the client's current sync state
-    /// </summary>
-    public void SaveSyncState(long sequence)
-    {
-        var state = new ClientSyncState
-        {
-            LastSequence = sequence,
-            LastSyncTime = DateTime.UtcNow
-        };
-
-        try
-        {
-            VFS.WriteTextFile(SyncStatePath, Json.Serialize(state));
-            logger.LogDebug($"Saved sync state at sequence {sequence}");
-        }
-        catch (Exception e)
-        {
-            logger.LogError($"Failed to save sync state: {e.Message}");
-        }
-    }
-
-    /// <summary>
-    ///     Apply incremental changes from the server changelog
-    /// </summary>
-    public async Task<(SyncPathFileList added, SyncPathFileList updated, SyncPathFileList removed)>
-        ApplyIncrementalChangesAsync(
-            ChangesResponse changesResponse,
-            List<SyncPath> enabledSyncPaths,
-            CancellationToken cancellationToken = default)
-    {
-        logger.LogInfo($"Applying {changesResponse.Changes.Count} incremental changes from server");
-#if NARCONET_DEBUG_LOGGING
-        logger.LogDebug($"Server current sequence: {changesResponse.CurrentSequence}");
-#endif
-
-        // Group changes by operation type
-        SyncPathFileList addedFiles = enabledSyncPaths.ToDictionary(sp => sp.Path, _ => new List<string>());
-        SyncPathFileList updatedFiles = enabledSyncPaths.ToDictionary(sp => sp.Path, _ => new List<string>());
-        SyncPathFileList removedFiles = enabledSyncPaths.ToDictionary(sp => sp.Path, _ => new List<string>());
-
-        foreach (var change in changesResponse.Changes.OrderBy(c => c.SequenceNumber))
-        {
-            // Find which sync path this file belongs to
-            // The file path from server includes the full path, need to match against sync path
-            SyncPath? matchingSyncPath = null;
-            
-            foreach (var sp in enabledSyncPaths)
-            {
-                // Normalize paths for comparison
-                string normalizedSyncPath = sp.Path.Replace("/", "\\").TrimEnd('\\');
-                string normalizedFilePath = change.FilePath.Replace("/", "\\");
-                
-                // Check if file path starts with sync path (case insensitive)
-                if (normalizedFilePath.StartsWith(normalizedSyncPath, StringComparison.OrdinalIgnoreCase))
-                {
-                    matchingSyncPath = sp;
-                    break;
-                }
-            }
-
-            if (matchingSyncPath == null)
-            {
-                // If no direct match, just add to the first enabled sync path
-                // This handles cases where the file path doesn't exactly match the sync path prefix
-                logger.LogDebug($"No exact sync path match for '{change.FilePath}', adding to first enabled path");
-                matchingSyncPath = enabledSyncPaths.FirstOrDefault();
-                
-                if (matchingSyncPath == null)
-                {
-                    logger.LogWarning($"No enabled sync paths available for file '{change.FilePath}'");
-                    continue;
-                }
-            }
-
-            switch (change.Operation)
-            {
-                case "Add":
-                    addedFiles[matchingSyncPath.Path].Add(change.FilePath);
-                    logger.LogDebug($"  + {change.FilePath}");
-                    break;
-
-                case "Modify":
-                    updatedFiles[matchingSyncPath.Path].Add(change.FilePath);
-                    logger.LogDebug($"  * {change.FilePath}");
-                    break;
-
-                case "Delete":
-                    removedFiles[matchingSyncPath.Path].Add(change.FilePath);
-                    logger.LogDebug($"  - {change.FilePath}");
-                    break;
-            }
-        }
-
-        int totalAdded = addedFiles.Sum(kvp => kvp.Value.Count);
-        int totalUpdated = updatedFiles.Sum(kvp => kvp.Value.Count);
-        int totalRemoved = removedFiles.Sum(kvp => kvp.Value.Count);
-
-        logger.LogInfo($"Changes: {totalAdded} added, {totalUpdated} updated, {totalRemoved} removed");
-
-        return (addedFiles, updatedFiles, removedFiles);
     }
 
     private void LogFileChanges(string changeType, SyncPathFileList changes)

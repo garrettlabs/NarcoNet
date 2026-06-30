@@ -1,5 +1,21 @@
 <Project>
     <!-- Solution-wide properties for MadManBeavis.NarcoNet -->
+
+    <!-- Tarkov / SPT reference paths (override TarkovDir via CLI or env for different installs) -->
+    <!-- Derived paths are conditional so the NuGet .targets fallback can override them in CI -->
+    <PropertyGroup>
+        <TarkovDir Condition=" '$(TarkovDir)' == '' ">$(MSBuildThisFileDirectory)..\..\</TarkovDir>
+        <TarkovManagedDir Condition="'$(TarkovManagedDir)' == ''">$(TarkovDir)EscapeFromTarkov_Data\Managed\</TarkovManagedDir>
+        <TarkovBepInExCoreDir Condition="'$(TarkovBepInExCoreDir)' == ''">$(TarkovDir)BepInEx\core\</TarkovBepInExCoreDir>
+        <TarkovPluginsSPTDir Condition="'$(TarkovPluginsSPTDir)' == ''">$(TarkovDir)BepInEx\plugins\spt\</TarkovPluginsSPTDir>
+        <TarkovBepInExPatchersDir Condition="'$(TarkovBepInExPatchersDir)' == ''">$(TarkovDir)BepInEx\patchers\</TarkovBepInExPatchersDir>
+    </PropertyGroup>
+
+    <!--- make sure the full build pathname is NOT included in the dll -->
+    <PropertyGroup>
+      <PathMap>$(MSBuildProjectDirectory)=.</PathMap>
+    </PropertyGroup>
+
     <PropertyGroup>
         <LangVersion>latest</LangVersion>
         <Nullable>enable</Nullable>
@@ -15,7 +31,7 @@
         <Authors>MadManBeavis</Authors>
 
         <!-- Version Info -->
-        <VersionPrefix>1.0.2</VersionPrefix>
+        <VersionPrefix>1.0.16</VersionPrefix>
         <AssemblyVersion>1.0.0.0</AssemblyVersion>
         <FileVersion>1.0.0.0</FileVersion>
     </PropertyGroup>
@@ -37,4 +53,14 @@
         <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
         <Deterministic>true</Deterministic>
     </PropertyGroup>
+
+    <!-- Cross-platform net472 compilation (provides System.*, mscorlib on Linux/macOS) -->
+    <ItemGroup>
+        <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net472" Version="1.0.3" PrivateAssets="all" />
+    </ItemGroup>
+
+    <!-- Game DLL references via NuGet (fallback for CI when local Tarkov install is absent) -->
+    <ItemGroup Condition="!Exists('$(TarkovManagedDir)')">
+        <PackageReference Include="NarcoNet.GameReferences" Version="4.0.3" PrivateAssets="all" ExcludeAssets="runtime" />
+    </ItemGroup>
 </Project>

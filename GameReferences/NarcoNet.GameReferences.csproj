@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>netstandard2.0</TargetFramework>
+        <NoBuild>true</NoBuild>
+        <IncludeBuildOutput>false</IncludeBuildOutput>
+        <PackageId>NarcoNet.GameReferences</PackageId>
+        <Version Condition="'$(GameRefsVersion)' != ''">$(GameRefsVersion)</Version>
+        <Version Condition="'$(GameRefsVersion)' == ''">4.0.3</Version>
+        <Description>Tarkov/SPT game DLL references for NarcoNet CI builds</Description>
+        <Authors>MadManBeavis</Authors>
+        <NoWarn>$(NoWarn);NU5128;NU5048</NoWarn>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <None Include="build/**" Pack="true" PackagePath="build/" />
+        <None Include="tools/**/*.dll" Pack="true" PackagePath="tools/" />
+    </ItemGroup>
+
+</Project>

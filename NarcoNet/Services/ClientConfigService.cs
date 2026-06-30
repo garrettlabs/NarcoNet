@@ -9,26 +9,68 @@ namespace NarcoNet.Services;
 /// </summary>
 public class ClientConfigService : IClientConfigService
 {
-    private static readonly List<string> HeadlessDefaultExclusions =
+    private static readonly List<string> HeadlessExclusionTemplates =
     [
-        "../BepInEx/plugins/AmandsGraphics.dll",
-        "../BepInEx/plugins/AmandsSense.dll",
-        "../BepInEx/plugins/Sense",
-        "../BepInEx/plugins/MoreCheckmarks",
-        "../BepInEx/plugins/kmyuhkyuk-EFTApi",
-        "../BepInEx/plugins/DynamicMaps",
-        "../BepInEx/plugins/LootValue",
-        "../BepInEx/plugins/CactusPie.RamCleanerInterval.dll",
-        "../BepInEx/plugins/TYR_DeClutterer.dll"
+        "BepInEx/plugins/Fika/Fika.Headless*",
+        "BepInEx/plugins/Fika/LICENSE-HEADLESS*",
+        "BepInEx/plugins/AirFilterQOLClientMod.dll",
+        "BepInEx/plugins/AllQuestsCheckmarks/",
+        "BepInEx/plugins/AmandsSense/",
+        "BepInEx/plugins/BorkelRNVG/",
+        "BepInEx/plugins/BringBackConcussion.dll",
+        "BepInEx/plugins/CaliberUnderName.dll",
+        "BepInEx/plugins/CloudSix/",
+        "BepInEx/plugins/com.swiftxp.spt.showmethemoney/",
+        "BepInEx/plugins/com.swiftxp.spt.showmethemoney.quicksell/",
+        "BepInEx/plugins/ContinuousHealing.dll",
+        "BepInEx/plugins/Deminvincibility.dll",
+        "BepInEx/plugins/DrakiaXYZ-GildedKeyStorage-Client.dll",
+        "BepInEx/plugins/DynamicMaps",
+        "BepInEx/plugins/flir.*",
+        "BepInEx/plugins/dvize.GTFO",
+        "BepInEx/plugins/flir.IncreaseLookDirection/",
+        "BepInEx/plugins/SamSWAT.TimeWeatherChanger",
+        "BepInEx/plugins/FOVFix.dll",
+        "BepInEx/plugins/Gaylatea-UseLooseLoot.dll",
+        "BepInEx/plugins/HallOfFameImprovements.dll",
+        "BepInEx/plugins/HandsAreNotBusy.dll",
+        "BepInEx/plugins/headshotdarkness/",
+        "BepInEx/plugins/HealingAutoCancel.dll",
+        "BepInEx/plugins/HollywoodFX/",
+        "BepInEx/plugins/HollywoodGraphics/",
+        "BepInEx/plugins/MedEffectsHUD/",
+        "BepInEx/plugins/MoxoPixel.MenuOverhaul/",
+        "BepInEx/plugins/SkillDistribution-Client.dll",
+        "BepInEx/plugins/SPTPropaneRemover.dll",
+        "BepInEx/plugins/Tetris.DeHazardifier.dll",
+        "BepInEx/plugins/Tosox.ChamberAmmoInfo.dll",
+        "BepInEx/plugins/Tosox.DynamicItemWeights/",
+        "BepInEx/plugins/Tosox.DynamicItemWeights.dll",
+        "BepInEx/plugins/Tyfon.HideoutInProgress.dll",
+        "BepInEx/plugins/VisualAssist/",
+        "BepInEx/plugins/DrakiaXYZ-QuestTracker",
+        "BepInEx/plugins/IcyClawz.MunitionsExpert.dll",
+        "BepInEx/plugins/Kaeno-TraderScrolling.dll",
+        "BepInEx/Plugins/NerfBotGrenades.dll",
+        "BepInEx/plugins/Terkoiz.Skipper.dll",
+        "BepInEx/plugins/ChouUn.Iof.dll",
+        "BepInEx/plugins/acidphantasm-stattrack/",
+        "BepInEx/plugins/HealingAutoCancel.dll",
+        "BepInEx/plugins/InteractableExfilsAPI/"
     ];
 
     private ConfigEntry<bool>? _deleteRemovedFiles;
+    private ConfigEntry<bool>? _autoCloseDiagnostic;
     private Dictionary<string, ConfigEntry<bool>>? _syncPathToggles;
     private List<SyncPath>? _syncPaths;
 
     /// <inheritdoc/>
     public ConfigEntry<bool> DeleteRemovedFiles =>
         _deleteRemovedFiles ?? throw new InvalidOperationException("Configuration not initialized");
+
+    /// <inheritdoc/>
+    public ConfigEntry<bool> AutoCloseDiagnostic =>
+        _autoCloseDiagnostic ?? throw new InvalidOperationException("Configuration not initialized");
 
     /// <inheritdoc/>
     public Dictionary<string, ConfigEntry<bool>> SyncPathToggles =>
@@ -58,16 +100,21 @@ public class ClientConfigService : IClientConfigService
     /// <inheritdoc/>
     public void Initialize(ConfigFile config, List<SyncPath> syncPaths)
     {
-        _syncPaths = syncPaths;
-
-        _deleteRemovedFiles = config.Bind(
+        var deleteRemovedFiles = config.Bind(
             "General",
             "Delete Removed Files",
             true,
             "Should the mod delete files that have been removed from the server?"
         );
 
-        _syncPathToggles = syncPaths
+        var autoCloseDiagnostic = config.Bind(
+            "General",
+            "Auto-Close Diagnostic Window",
+            true,
+            "Automatically close the sync diagnostic window when sync completes. Disable for debugging."
+        );
+
+        var syncPathToggles = syncPaths
             .Select(syncPath => new KeyValuePair<string, ConfigEntry<bool>>(
                 syncPath.Path,
                 config.Bind(
@@ -82,6 +129,12 @@ public class ClientConfigService : IClientConfigService
                 )
             ))
             .ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
+
+        // Assign all fields only after everything succeeds
+        _syncPaths = syncPaths;
+        _deleteRemovedFiles = deleteRemovedFiles;
+        _autoCloseDiagnostic = autoCloseDiagnostic;
+        _syncPathToggles = syncPathToggles;
     }
 
     /// <inheritdoc/>
@@ -91,8 +144,8 @@ public class ClientConfigService : IClientConfigService
     }
 
     /// <inheritdoc/>
-    public List<string> GetHeadlessDefaultExclusions()
+    public List<string> GetHeadlessExclusionTemplates()
     {
-        return HeadlessDefaultExclusions;
+        return HeadlessExclusionTemplates;
     }
 }

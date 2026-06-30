@@ -17,9 +17,9 @@ public class SyncPathFilteringTests(ITestOutputHelper testOutputHelper)
         // Arrange
         var paths = new List<SyncPath>
         {
-            new(Path: "../BepInEx/plugins", Name: "Plugins", Enabled: true, Enforced: false, Silent: false, RestartRequired: true),
-            new(Path: "../BepInEx/config", Name: "Config", Enabled: true, Enforced: false, Silent: false, RestartRequired: true),
-            new(Path: "user/mods", Name: "Server mods", Enabled: false, Enforced: false, Silent: false, RestartRequired: false),
+            new(Path: "BepInEx/plugins", Name: "Plugins", Enabled: true, Enforced: false, Silent: false, RestartRequired: true),
+            new(Path: "BepInEx/config", Name: "Config", Enabled: true, Enforced: false, Silent: false, RestartRequired: true),
+            new(Path: "SPT/user/mods", Name: "Server mods", Enabled: false, Enforced: false, Silent: false, RestartRequired: false),
         };
 
         testOutputHelper.WriteLine("Input paths:");
@@ -41,11 +41,11 @@ public class SyncPathFilteringTests(ITestOutputHelper testOutputHelper)
         testOutputHelper.WriteLine($"\nResult: {filtered.Count} paths (expected 2)");
 
         Assert.Equal(2, filtered.Count);
-        Assert.Contains(filtered, sp => sp.Path == "../BepInEx/plugins");
-        Assert.Contains(filtered, sp => sp.Path == "../BepInEx/config");
-        Assert.DoesNotContain(filtered, sp => sp.Path == "user/mods");
+        Assert.Contains(filtered, sp => sp.Path == "BepInEx/plugins");
+        Assert.Contains(filtered, sp => sp.Path == "BepInEx/config");
+        Assert.DoesNotContain(filtered, sp => sp.Path == "SPT/user/mods");
 
-        testOutputHelper.WriteLine("\n✓ TEST PASSED: user/mods was correctly filtered out\n");
+        testOutputHelper.WriteLine("\n✓ TEST PASSED: SPT/user/mods was correctly filtered out\n");
     }
 
     [Fact]
@@ -122,15 +122,14 @@ public class SyncPathFilteringTests(ITestOutputHelper testOutputHelper)
         // Arrange - simulating the actual config from the screenshot
         var paths = new List<SyncPath>
         {
-            // Builtins (always included)
-            new(Path: "NarcoNet.Updater.exe", Name: "(Builtin) Updater", Enabled: true, Enforced: true, Silent: true, RestartRequired: false),
-            new(Path: "../BepInEx/plugins/MadManBeavis-NarcoNet", Name: "(Builtin) Plugin", Enabled: true, Enforced: true, Silent: true, RestartRequired: true),
+            // NarcoNet auto-update (from default config template)
+            new(Path: "BepInEx/plugins/MadManBeavis-NarcoNet", Name: "NarcoNet", Enabled: true, Enforced: true, Silent: true, RestartRequired: true),
 
             // User config
-            new(Path: "../BepInEx/plugins", Name: "Plugins", Enabled: true, Enforced: false, Silent: false, RestartRequired: true),
-            new(Path: "../BepInEx/patchers", Name: "Patchers", Enabled: true, Enforced: false, Silent: false, RestartRequired: true),
-            new(Path: "../BepInEx/config", Name: "Config", Enabled: true, Enforced: false, Silent: false, RestartRequired: true),
-            new(Path: "user/mods", Name: "(Optional) Server mods", Enabled: false, Enforced: false, Silent: false, RestartRequired: false),
+            new(Path: "BepInEx/plugins", Name: "Plugins", Enabled: true, Enforced: false, Silent: false, RestartRequired: true),
+            new(Path: "BepInEx/patchers", Name: "Patchers", Enabled: true, Enforced: false, Silent: false, RestartRequired: true),
+            new(Path: "BepInEx/config", Name: "Config", Enabled: true, Enforced: false, Silent: false, RestartRequired: true),
+            new(Path: "SPT/user/mods", Name: "(Optional) Server mods", Enabled: false, Enforced: false, Silent: false, RestartRequired: false),
         };
 
         testOutputHelper.WriteLine("All sync paths:");
@@ -149,8 +148,8 @@ public class SyncPathFilteringTests(ITestOutputHelper testOutputHelper)
             testOutputHelper.WriteLine($"  - {sp.Path}");
         }
 
-        Assert.Equal(5, filtered.Count); // 2 builtins + 3 enabled user paths
-        Assert.DoesNotContain(filtered, sp => sp.Path == "user/mods");
+        Assert.Equal(4, filtered.Count); // 1 builtin + 3 enabled user paths
+        Assert.DoesNotContain(filtered, sp => sp.Path == "SPT/user/mods");
 
         testOutputHelper.WriteLine("\n✓ TEST PASSED.: Real world scenario works correctly\n");
     }

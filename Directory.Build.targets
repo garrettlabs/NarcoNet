@@ -1,6 +1,6 @@
 <Project>
     <!-- Solution-wide post-build: Deploy entire Build folder to test locations -->
-    <Target Name="DeployToTestLocations" AfterTargets="Build" Condition="'$(DeployAfterBuild)' == 'true'">
+    <Target Name="DeployToTestLocations" AfterTargets="Build" Condition="'$(DeployAfterBuild)' == 'true' AND '$([MSBuild]::IsOSPlatform(Windows))'">
         <Message Importance="high" Text="Deploying Build folder to test locations..." />
 
         <!-- Copy BepInEx folder contents -->

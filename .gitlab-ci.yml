@@ -1,0 +1,77 @@
+image: mcr.microsoft.com/dotnet/sdk:9.0
+
+stages:
+  - build
+  - test
+  - package
+  - release
+
+before_script:
+  - dotnet nuget add source "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/nuget/index.json"
+      --name gitlab --username gitlab-ci-token --password "${CI_JOB_TOKEN}"
+      --store-password-in-clear-text
+
+build:
+  stage: build
+  script:
+    - dotnet build -c Release -p:DeployAfterBuild=false
+  artifacts:
+    paths:
+      - "*/bin/"
+      - Build/
+
+test:
+  stage: test
+  needs: [build]
+  script:
+    - dotnet test -c Release --no-build
+
+package:
+  stage: package
+  needs: [test]
+  rules:
+    - if: $CI_COMMIT_TAG
+  script:
+    - apt-get update -qq && apt-get install -y -qq zip > /dev/null
+    - VERSION=${CI_COMMIT_TAG#v}
+    - dotnet build -c Release -p:DeployAfterBuild=false -p:VersionPrefix=${VERSION}
+    - PACKAGE_FILE="NarcoNet-v${VERSION}.zip"
+    - mkdir -p dist/staging/BepInEx/plugins/MadManBeavis-NarcoNet
+    - mkdir -p dist/staging/SPT/user/mods/NarcoNet-Server
+    - cp NarcoNet/bin/Release/NarcoNet.dll dist/staging/BepInEx/plugins/MadManBeavis-NarcoNet/
+    - cp NarcoNet.UI/bin/Release/NarcoNet.UI.dll dist/staging/BepInEx/plugins/MadManBeavis-NarcoNet/
+    - cp NarcoNet.Utilities/bin/Release/net472/NarcoNet.Utilities.dll dist/staging/BepInEx/plugins/MadManBeavis-NarcoNet/
+    - cp Build/SPT/user/mods/NarcoNet-Server/*.dll dist/staging/SPT/user/mods/NarcoNet-Server/
+    - cp Build/SPT/user/mods/NarcoNet-Server/*.json dist/staging/SPT/user/mods/NarcoNet-Server/
+    - cd dist/staging && zip -qr "../${PACKAGE_FILE}" . && cd ../..
+    - |
+      PACKAGE_URL="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/narconet/${VERSION}/${PACKAGE_FILE}"
+      curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           --upload-file "dist/${PACKAGE_FILE}" \
+           "${PACKAGE_URL}"
+      echo "PACKAGE_URL=${PACKAGE_URL}" >> package.env
+      echo "PACKAGE_FILE=${PACKAGE_FILE}" >> package.env
+  artifacts:
+    paths:
+      - dist/
+    reports:
+      dotenv: package.env
+
+release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  needs: [package]
+  rules:
+    - if: $CI_COMMIT_TAG
+  before_script: []
+  script:
+    - echo "Creating release for ${CI_COMMIT_TAG}"
+  release:
+    tag_name: $CI_COMMIT_TAG
+    name: "NarcoNet $CI_COMMIT_TAG"
+    description: "Release $CI_COMMIT_TAG"
+    assets:
+      links:
+        - name: $PACKAGE_FILE
+          url: $PACKAGE_URL
+          link_type: package

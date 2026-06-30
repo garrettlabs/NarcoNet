@@ -27,6 +27,10 @@ public static class Glob
 
     private static string Replace(string glob)
     {
+        // A trailing / means "this directory and everything in it"
+        if (glob.EndsWith("/"))
+            glob += "**";
+
         return GlobRe.Replace(RestRe.Replace(DotRe.Replace(glob, DotPattern), RestPattern),
             match => MapToPattern(match.Value));
     }

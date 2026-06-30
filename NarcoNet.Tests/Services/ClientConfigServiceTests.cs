@@ -8,19 +8,19 @@ namespace NarcoNet.Tests.Services;
 public class ClientConfigServiceTests
 {
     [Fact]
-    public void GetHeadlessDefaultExclusions_ReturnsExpectedList()
+    public void GetHeadlessExclusionTemplates_ReturnsExpectedList()
     {
         // Arrange
         var service = new ClientConfigService();
 
         // Act
-        var exclusions = service.GetHeadlessDefaultExclusions();
+        var exclusions = service.GetHeadlessExclusionTemplates();
 
         // Assert
         Assert.NotEmpty(exclusions);
-        Assert.Contains("../BepInEx/plugins/AmandsGraphics.dll", exclusions);
-        Assert.Contains("../BepInEx/plugins/AmandsSense.dll", exclusions);
-        Assert.Contains("../BepInEx/plugins/DynamicMaps", exclusions);
+        Assert.Contains("BepInEx/plugins/Fika/Fika.Headless*", exclusions);
+        Assert.Contains("BepInEx/plugins/AmandsSense/", exclusions);
+        Assert.Contains("BepInEx/plugins/DynamicMaps", exclusions);
     }
 
     [Fact]

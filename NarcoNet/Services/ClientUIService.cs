@@ -1,9 +1,12 @@
 using Comfort.Common;
 using EFT.UI;
 using NarcoNet.UI;
+using NarcoNet.Utilities;
 using UnityEngine;
 
 namespace NarcoNet.Services;
+
+using SyncPathModFiles = Dictionary<string, Dictionary<string, ModFile>>;
 
 /// <summary>
 ///     Manages client UI windows and user interactions
@@ -24,29 +27,45 @@ public class ClientUIService : IClientUIService
         new(new Vector2(480f, 200f), "Update Complete.", "Please restart your game to continue.");
 
     private readonly UpdateWindow _updateWindow = new("Installed mods do not match server", "Would you like to update?");
+    private readonly DiagnosticWindow _diagnosticWindow = new();
+    private readonly FileComparisonWindow _fileComparisonWindow = new();
 
-    private int _downloadCount;
-    private int _totalDownloadCount;
-    private Action? _currentCancelAction;
-    private Action? _currentAcceptAction;
+    private volatile int _downloadCount;
+    private volatile int _totalDownloadCount;
+    private long _bytesDownloaded;   // use Volatile.Read/Write (C# disallows volatile long)
+    private long _bytesTotal;        // use Volatile.Read/Write (C# disallows volatile long)
+
+    // Track which game UI objects we hid, so we only restore what we disabled
+    private bool _hidLoginUI;
+    private bool _hidPreloaderUI;
+    private bool _hidCommonUI;
+    private volatile Action? _currentCancelAction;
+    private Action<bool>? _currentAcceptAction;
     private Action? _currentSkipAction;
     private Action? _currentRestartAction;
     private Action? _currentQuitAction;
     private string _updateChanges = "";
+    private bool _hasRemovedFiles;
 
     /// <inheritdoc/>
     public bool IsAnyWindowActive =>
         _updateWindow.Active || _progressWindow.Active || _restartWindow.Active || _downloadErrorWindow.Active;
 
+    /// <summary>
+    ///     Gets whether the diagnostic overlay is visible (not counted in IsAnyWindowActive since it's non-modal)
+    /// </summary>
+    public bool IsDiagnosticActive => _diagnosticWindow.Active;
+
     /// <inheritdoc/>
-    public void ShowUpdateWindow(List<string> optional, List<string> required, Action onAccept, Action? onSkip)
+    public void ShowUpdateWindow(List<string> optional, List<string> required, Action<bool> onAccept, Action? onSkip, bool hasRemovedFiles)
     {
         _updateChanges = (optional.Count != 0 ? string.Join("\n", optional) : "")
             + (optional.Count != 0 && required.Count != 0 ? "\n\n" : "")
-            + (required.Count != 0 ? "[Enforced]\n" + string.Join("\n", required) : "");
+            + (required.Count != 0 ? string.Join("\n", required) : "");
 
         _currentAcceptAction = onAccept;
         _currentSkipAction = onSkip;
+        _hasRemovedFiles = hasRemovedFiles;
         _updateWindow.Show();
     }
 
@@ -62,6 +81,13 @@ public class ClientUIService : IClientUIService
         _downloadCount = current;
         _totalDownloadCount = total;
         _currentCancelAction = onCancel;
+    }
+
+    /// <inheritdoc/>
+    public void UpdateByteProgress(long current, long total)
+    {
+        Volatile.Write(ref _bytesDownloaded, current);
+        Volatile.Write(ref _bytesTotal, total);
     }
 
     /// <inheritdoc/>
@@ -91,6 +117,45 @@ public class ClientUIService : IClientUIService
         _progressWindow.Hide();
         _restartWindow.Hide();
         _downloadErrorWindow.Hide();
+        _fileComparisonWindow.Hide();
+    }
+
+    /// <inheritdoc/>
+    public void ShowDiagnosticWindow()
+    {
+        _diagnosticWindow.Clear();
+        _diagnosticWindow.Show();
+    }
+
+    /// <inheritdoc/>
+    public void UpdateDiagnosticStep(string stepKey, string status, DiagnosticState state)
+    {
+        _diagnosticWindow.UpdateStep(stepKey, status, state);
+    }
+
+    /// <inheritdoc/>
+    public void HideDiagnosticWindow()
+    {
+        _diagnosticWindow.Hide();
+    }
+
+    /// <inheritdoc/>
+    public void ShowFileComparisonWindow(SyncPathModFiles localModFiles, SyncPathModFiles remoteModFiles)
+    {
+        _fileComparisonWindow.SetData(localModFiles, remoteModFiles);
+        _fileComparisonWindow.Show();
+    }
+
+    /// <inheritdoc/>
+    public void HideFileComparisonWindow()
+    {
+        _fileComparisonWindow.Hide();
+    }
+
+    /// <inheritdoc/>
+    public void SetDiagnosticShowFilesAction(Action? onShowFiles)
+    {
+        _diagnosticWindow.OnShowFilesClicked = onShowFiles;
     }
 
     /// <inheritdoc/>
@@ -108,17 +173,29 @@ public class ClientUIService : IClientUIService
 
         if (_progressWindow.Active)
         {
-            _progressWindow.Draw(_downloadCount, _totalDownloadCount, _currentCancelAction);
+            _progressWindow.Draw(_downloadCount, _totalDownloadCount,
+                Volatile.Read(ref _bytesDownloaded), Volatile.Read(ref _bytesTotal),
+                _currentCancelAction);
         }
 
         if (_updateWindow.Active && _currentAcceptAction != null)
         {
-            _updateWindow.Draw(_updateChanges, _currentAcceptAction, _currentSkipAction);
+            _updateWindow.Draw(_updateChanges, _currentAcceptAction, _currentSkipAction, _hasRemovedFiles);
         }
 
         if (_downloadErrorWindow.Active && _currentQuitAction != null)
         {
             _downloadErrorWindow.Draw(_currentQuitAction);
+        }
+
+        if (_diagnosticWindow.Active)
+        {
+            _diagnosticWindow.Draw();
+        }
+
+        if (_fileComparisonWindow.Active)
+        {
+            _fileComparisonWindow.Draw();
         }
     }
 
@@ -130,33 +207,39 @@ public class ClientUIService : IClientUIService
             if (Singleton<LoginUI>.Instantiated && Singleton<LoginUI>.Instance.gameObject.activeSelf)
             {
                 Singleton<LoginUI>.Instance.gameObject.SetActive(false);
+                _hidLoginUI = true;
             }
 
             if (Singleton<PreloaderUI>.Instantiated && Singleton<PreloaderUI>.Instance.gameObject.activeSelf)
             {
                 Singleton<PreloaderUI>.Instance.gameObject.SetActive(false);
+                _hidPreloaderUI = true;
             }
 
             if (Singleton<CommonUI>.Instantiated && Singleton<CommonUI>.Instance.gameObject.activeSelf)
             {
                 Singleton<CommonUI>.Instance.gameObject.SetActive(false);
+                _hidCommonUI = true;
             }
         }
         else
         {
-            if (Singleton<LoginUI>.Instantiated && !Singleton<LoginUI>.Instance.gameObject.activeSelf)
+            if (_hidLoginUI && Singleton<LoginUI>.Instantiated)
             {
                 Singleton<LoginUI>.Instance.gameObject.SetActive(true);
+                _hidLoginUI = false;
             }
 
-            if (Singleton<PreloaderUI>.Instantiated && !Singleton<PreloaderUI>.Instance.gameObject.activeSelf)
+            if (_hidPreloaderUI && Singleton<PreloaderUI>.Instantiated)
             {
                 Singleton<PreloaderUI>.Instance.gameObject.SetActive(true);
+                _hidPreloaderUI = false;
             }
 
-            if (Singleton<CommonUI>.Instantiated && !Singleton<CommonUI>.Instance.gameObject.activeSelf)
+            if (_hidCommonUI && Singleton<CommonUI>.Instantiated)
             {
                 Singleton<CommonUI>.Instance.gameObject.SetActive(true);
+                _hidCommonUI = false;
             }
         }
     }

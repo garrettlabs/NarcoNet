@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using System.Text.Json;
 
 using Microsoft.AspNetCore.Http;
@@ -18,71 +19,15 @@ namespace NarcoNet.Server.Services;
 /// <summary>
 ///     HTTP listener for NarcoNet mod synchronization endpoints
 /// </summary>
-[Injectable(InjectionType = InjectionType.Singleton, TypePriority = OnLoadOrder.PreSptModLoader+1)]
+[Injectable(InjectionType = InjectionType.Singleton, TypePriority = OnLoadOrder.PreSptModLoader + 1)]
 public class NarcoNetHttpListener(
     ILogger<NarcoNetHttpListener> logger,
     SyncService syncService,
-    MimeTypeHelper mimeTypeHelper,
-    ChangeLogService changeLogService)
+    MimeTypeHelper mimeTypeHelper)
     : IHttpListener
 {
-    // Fallback data for older client versions
-    private static readonly Dictionary<string, object> FallbackSyncPaths = new()
-    {
-        { "undefined", new[] { "BepInEx\\plugins\\NarcoNet.dll", "NarcoNet.Updater.exe" } },
-        {
-            "0.8.0", new[]
-            {
-                new
-                {
-                    enabled = true,
-                    enforced = true,
-                    path = "BepInEx\\plugins\\NarcoNet.dll",
-                    restartRequired = true,
-                    silent = false
-                },
-                new
-                {
-                    enabled = true,
-                    enforced = true,
-                    path = "NarcoNet.Updater.exe",
-                    restartRequired = false,
-                    silent = false
-                }
-            }
-        }
-    };
-
-    private static readonly Dictionary<string, object> FallbackHashes = new()
-    {
-        {
-            "undefined", new Dictionary<string, object>
-            {
-                { "BepInEx\\plugins\\NarcoNet.dll", new { crc = 999999999 } },
-                { "NarcoNet.Updater.exe", new { crc = 999999999 } }
-            }
-        },
-        {
-            "0.8.0", new Dictionary<string, object>
-            {
-                {
-                    "BepInEx\\plugins\\NarcoNet.dll", new Dictionary<string, object>
-                    {
-                        { "BepInEx\\plugins\\NarcoNet.dll", new { crc = 999999999, nosync = false } }
-                    }
-                },
-                {
-                    "NarcoNet.Updater.exe", new Dictionary<string, object>
-                    {
-                        { "NarcoNet.Updater.exe", new { crc = 999999999, nosync = false } }
-                    }
-                }
-            }
-        }
-    };
-
     private NarcoNetConfig? _config;
-    private bool _isInitialized;
+    private volatile bool _isInitialized;
     private string? _modVersion;
 
     public bool CanHandle(MongoId sessionId, HttpContext context)
@@ -110,56 +55,51 @@ public class NarcoNetHttpListener(
         {
             string path = context.Request.Path.Value ?? "";
 #if NARCONET_DEBUG_LOGGING
-            logger.LogDebug($"NarcoNet request received: {context.Request.Method} {path}");
+            logger.LogDebug("NarcoNet request received: {RequestMethod} {Path}", context.Request.Method, path);
 #endif
 
-            if (path == "/narconet/version")
+            switch (path)
             {
-                await HandleGetVersion(context);
+                case "/narconet/version":
+                    await HandleGetVersion(context);
+                    break;
+                case "/narconet/syncpaths":
+                    await HandleGetSyncPaths(context);
+                    break;
+                case "/narconet/exclusions":
+                    await HandleGetExclusions(context);
+                    break;
+                case "/narconet/hashes":
+                    await HandleGetHashes(context);
+                    break;
+                default:
+                {
+                    if (path.StartsWith("/narconet/fetch/"))
+                    {
+                        await HandleFetchModFile(context);
+                    }
+                    else
+                    {
+                        context.Response.StatusCode = 404;
+                        await context.Response.WriteAsync("NarcoNet: Unknown route");
+                    }
+
+                    break;
+                }
             }
-            else if (path == "/narconet/syncpaths")
-            {
-                await HandleGetSyncPaths(context);
-            }
-            else if (path == "/narconet/exclusions")
-            {
-                await HandleGetExclusions(context);
-            }
-            else if (path == "/narconet/ignored-profiles")
-            {
-                await HandleGetIgnoredProfiles(context);
-            }
-            else if (path == "/narconet/profile-bypass")
-            {
-                await HandleProfileBypassNotification(context);
-            }
-            else if (path == "/narconet/hashes")
-            {
-                await HandleGetHashes(context);
-            }
-            else if (path == "/narconet/changes")
-            {
-                await HandleGetChanges(context);
-            }
-            else if (path == "/narconet/sequence")
-            {
-                await HandleGetCurrentSequence(context);
-            }
-            else if (path.StartsWith("/narconet/fetch/"))
-            {
-                await HandleFetchModFile(context);
-            }
-            else
-            {
-                context.Response.StatusCode = 404;
-                await context.Response.WriteAsync("NarcoNet: Unknown route");
-            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Client disconnected — already logged by the specific handler
         }
         catch (Exception ex)
         {
             logger.LogError(ex, "Error handling request [{Method} {Path}]", context.Request.Method, context.Request.Path);
-            context.Response.StatusCode = 500;
-            await context.Response.WriteAsync($"NarcoNet: Error handling [{context.Request.Method} {context.Request.Path}]:\n{ex}");
+            if (!context.Response.HasStarted)
+            {
+                context.Response.StatusCode = 500;
+                await context.Response.WriteAsync($"NarcoNet: Error handling [{context.Request.Method} {context.Request.Path}]:\n{ex}");
+            }
         }
     }
 
@@ -186,26 +126,16 @@ public class NarcoNetHttpListener(
 
     private async Task HandleGetSyncPaths(HttpContext context)
     {
-        string? version = context.Request.Headers["narconet-version"].FirstOrDefault();
-
-        string json;
-        if (!string.IsNullOrEmpty(version) && FallbackSyncPaths.ContainsKey(version))
+        var syncPaths = _config!.SyncPaths.Select(sp => new
         {
-            json = JsonSerializer.Serialize(FallbackSyncPaths[version]);
-        }
-        else
-        {
-            var syncPaths = _config!.SyncPaths.Select(sp => new
-            {
-                sp.Name,
-                Path = PathHelper.ToWindowsPath(sp.Path),
-                sp.Enabled,
-                sp.Enforced,
-                sp.Silent,
-                sp.RestartRequired
-            }).ToList();
-            json = JsonSerializer.Serialize(syncPaths);
-        }
+            sp.Name,
+            Path = PathHelper.ToUnixPath(sp.Path),
+            sp.Enabled,
+            sp.Enforced,
+            sp.Silent,
+            sp.RestartRequired
+        }).ToList();
+        string json = JsonSerializer.Serialize(syncPaths);
 
         byte[] jsonBytes = System.Text.Encoding.UTF8.GetBytes(json);
         context.Response.ContentType = "application/json";
@@ -227,174 +157,44 @@ public class NarcoNetHttpListener(
         await context.Response.CompleteAsync();
     }
 
-    private async Task HandleGetIgnoredProfiles(HttpContext context)
-    {
-        string json = JsonSerializer.Serialize(_config!.IgnoredProfiles);
-        byte[] jsonBytes = System.Text.Encoding.UTF8.GetBytes(json);
-
-        context.Response.ContentType = "application/json";
-        context.Response.StatusCode = 200;
-        await context.Response.Body.WriteAsync(jsonBytes);
-        await context.Response.StartAsync();
-        await context.Response.CompleteAsync();
-    }
-
-    private async Task HandleProfileBypassNotification(HttpContext context)
-    {
-        ProfileBypassNotification? notification = null;
-        try
-        {
-            notification = await JsonSerializer.DeserializeAsync<ProfileBypassNotification>(context.Request.Body);
-        }
-        catch (JsonException e)
-        {
-            logger.LogWarning(e, "Received malformed NarcoNet profile bypass notification");
-        }
-
-        string? profileId = ProfileBypass.NormalizeProfileIdentifier(notification?.ProfileId);
-        if (string.IsNullOrEmpty(profileId))
-        {
-            context.Response.StatusCode = 400;
-            await context.Response.StartAsync();
-            await context.Response.CompleteAsync();
-            return;
-        }
-
-        logger.LogInformation("Ignoring NarcoNet sync for configured profile {ProfileId}", profileId);
-
-        context.Response.ContentType = "application/json";
-        context.Response.StatusCode = 200;
-        byte[] jsonBytes = System.Text.Encoding.UTF8.GetBytes("{\"ok\":true}");
-        await context.Response.Body.WriteAsync(jsonBytes);
-        await context.Response.StartAsync();
-        await context.Response.CompleteAsync();
-    }
-
-    private sealed record ProfileBypassNotification(string? ProfileId);
-
     private async Task HandleGetHashes(HttpContext context)
     {
-        string? version = context.Request.Headers["narconet-version"].FirstOrDefault();
-#if NARCONET_DEBUG_LOGGING
-        logger.LogDebug($"HandleGetHashes: Client version: {version ?? "unknown"}");
-#endif
+        StringValues pathsParam = context.Request.Query["path"];
 
-        string json;
-        if (!string.IsNullOrEmpty(version) && FallbackHashes.ContainsKey(version))
+        List<SyncPath> pathsToHash;
+        if (pathsParam.Count > 0)
         {
-            json = JsonSerializer.Serialize(FallbackHashes[version]);
+            List<string?> requestedPaths = pathsParam.ToList();
+            logger.LogDebug("Client requested {Count} specific paths", requestedPaths.Count);
 #if NARCONET_DEBUG_LOGGING
-            logger.LogDebug($"Using fallback hashes for version {version}");
+            foreach (var reqPath in requestedPaths)
+            {
+                logger.LogDebug("  - {ReqPath}", reqPath);
+            }
 #endif
+            pathsToHash = _config!.SyncPaths
+                .Where(sp => requestedPaths.Contains(sp.Path))
+                .ToList();
+            logger.LogDebug("Hashing {Count} paths", pathsToHash.Count);
         }
         else
         {
-            StringValues pathsParam = context.Request.Query["path"];
-
-            // Only hash enabled or enforced sync paths
-            List<SyncPath> pathsToHash;
-            if (pathsParam.Count > 0)
-            {
-                // Client requested specific paths - only hash those (if enabled or enforced)
-                List<string?> requestedPaths = pathsParam.ToList();
-                logger.LogDebug("Client requested {Count} specific paths", requestedPaths.Count);
-#if NARCONET_DEBUG_LOGGING
-                foreach (var reqPath in requestedPaths)
-                {
-                    logger.LogDebug($"  - {reqPath}");
-                }
-#endif
-                pathsToHash = _config!.SyncPaths
-                    .Where(sp => (sp.Enabled || sp.Enforced) && requestedPaths.Contains(sp.Path))
-                    .ToList();
-                logger.LogDebug("Hashing {Count} enabled/enforced paths", pathsToHash.Count);
-            }
-            else
-            {
-                // No specific paths requested - hash all enabled/enforced paths
-                logger.LogDebug("Hashing all enabled/enforced sync paths");
-                pathsToHash = _config!.SyncPaths
-                    .Where(sp => sp.Enabled || sp.Enforced)
-                    .ToList();
-            }
-
-            Dictionary<string, Dictionary<string, ModFile>> hashResults = await syncService.HashModFilesAsync(pathsToHash, _config, context.RequestAborted);
-
-            // Log total file counts per path
-            foreach (var pathHash in hashResults)
-            {
-                logger.LogDebug("Path '{Path}' has {Count} files",
-                    pathHash.Key, pathHash.Value.Count);
-            }
-
-            json = JsonSerializer.Serialize(hashResults);
+            logger.LogDebug("Hashing all sync paths");
+            pathsToHash = _config!.SyncPaths.ToList();
         }
 
-        byte[] jsonBytes = System.Text.Encoding.UTF8.GetBytes(json);
-        context.Response.ContentType = "application/json";
-        context.Response.StatusCode = 200;
-        await context.Response.Body.WriteAsync(jsonBytes);
-        await context.Response.StartAsync();
-        await context.Response.CompleteAsync();
-    }
+        Dictionary<string, Dictionary<string, ModFile>> hashResults = await syncService.HashModFilesAsync(pathsToHash, _config, context.RequestAborted);
 
-    private async Task HandleGetChanges(HttpContext context)
-    {
-        // Get sequence number from query parameter
-        if (!context.Request.Query.TryGetValue("since", out StringValues sinceParam) || 
-            !long.TryParse(sinceParam.FirstOrDefault(), out long sinceSequence))
+        // Log total file counts per path
+        foreach (var pathHash in hashResults)
         {
-            context.Response.StatusCode = 400;
-            await context.Response.WriteAsync("NarcoNet: Missing or invalid 'since' query parameter");
-            return;
+            logger.LogDebug("Path '{Path}' has {Count} files",
+                pathHash.Key, pathHash.Value.Count);
         }
 
-        logger.LogDebug("Client requested changes since sequence {Sequence}", sinceSequence);
+        string json = JsonSerializer.Serialize(hashResults);
 
-        // Get changes from changelog service
-        List<FileChangeEntry> changes = changeLogService.GetChangesSince(sinceSequence);
-        long currentSequence = await changeLogService.GetCurrentSequenceAsync(context.RequestAborted);
-
-        var response = new
-        {
-            CurrentSequence = currentSequence,
-            Changes = changes.Select(c => new
-            {
-                c.SequenceNumber,
-                Operation = c.Operation.ToString(),
-                c.FilePath,
-                c.Hash,
-                c.Timestamp,
-                c.FileSize,
-                c.LastModified
-            }).ToList()
-        };
-
-        string json = JsonSerializer.Serialize(response);
         byte[] jsonBytes = System.Text.Encoding.UTF8.GetBytes(json);
-
-        context.Response.ContentType = "application/json";
-        context.Response.StatusCode = 200;
-        await context.Response.Body.WriteAsync(jsonBytes);
-        await context.Response.StartAsync();
-        await context.Response.CompleteAsync();
-
-        logger.LogDebug("Returned {Count} changes to client (current sequence: {Current})", 
-            changes.Count, currentSequence);
-    }
-
-    private async Task HandleGetCurrentSequence(HttpContext context)
-    {
-        long currentSequence = await changeLogService.GetCurrentSequenceAsync(context.RequestAborted);
-
-        var response = new
-        {
-            CurrentSequence = currentSequence
-        };
-
-        string json = JsonSerializer.Serialize(response);
-        byte[] jsonBytes = System.Text.Encoding.UTF8.GetBytes(json);
-
         context.Response.ContentType = "application/json";
         context.Response.StatusCode = 200;
         await context.Response.Body.WriteAsync(jsonBytes);
@@ -427,13 +227,34 @@ public class NarcoNetHttpListener(
             logger.LogInformation("Serving file '{FilePath}' ({FileSize} bytes) to {ClientIp}",
                 filePath, fileInfo.Length, clientIp);
 
-            context.Response.Headers["Accept-Ranges"] = "bytes";
             context.Response.ContentType = mimeType;
-            context.Response.ContentLength = fileInfo.Length;
             context.Response.StatusCode = 200;
 
-            await using FileStream fileStream = new(sanitizedPath, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, true);
-            await fileStream.CopyToAsync(context.Response.Body, context.RequestAborted);
+            bool useGzip = context.Request.Headers.AcceptEncoding.ToString().Contains("gzip", StringComparison.OrdinalIgnoreCase);
+
+            await using FileStream fileStream = new(sanitizedPath, FileMode.Open, FileAccess.Read, FileShare.Read, 65536, true);
+
+            if (useGzip)
+            {
+                context.Response.Headers.ContentEncoding = "gzip";
+                context.Response.Headers["X-Uncompressed-Length"] = fileInfo.Length.ToString();
+                // Content-Length omitted — compressed size unknown ahead of time (chunked transfer)
+
+                await using var gzipStream = new GZipStream(context.Response.Body, CompressionLevel.Fastest, leaveOpen: true);
+                await fileStream.CopyToAsync(gzipStream, 65536, context.RequestAborted);
+            }
+            else
+            {
+                context.Response.Headers["Accept-Ranges"] = "bytes";
+                context.Response.ContentLength = fileInfo.Length;
+
+                await fileStream.CopyToAsync(context.Response.Body, 65536, context.RequestAborted);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Client disconnected mid-transfer — not a server error
+            logger.LogDebug("Client {ClientIp} disconnected while downloading '{FilePath}'", clientIp, filePath);
         }
         catch (UnauthorizedAccessException ex)
         {
@@ -443,8 +264,11 @@ public class NarcoNetHttpListener(
         catch (Exception ex)
         {
             logger.LogError(ex, "Error reading file '{FilePath}'", filePath);
-            context.Response.StatusCode = 500;
-            await context.Response.WriteAsync($"NarcoNet: Error reading '{filePath}'\n{ex}");
+            if (!context.Response.HasStarted)
+            {
+                context.Response.StatusCode = 500;
+                await context.Response.WriteAsync($"NarcoNet: Error reading '{filePath}'\n{ex}");
+            }
         }
     }
 }

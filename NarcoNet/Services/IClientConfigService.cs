@@ -14,6 +14,11 @@ public interface IClientConfigService
     ConfigEntry<bool> DeleteRemovedFiles { get; }
 
     /// <summary>
+    ///     Gets the configuration entry for auto-closing the diagnostic window after sync
+    /// </summary>
+    ConfigEntry<bool> AutoCloseDiagnostic { get; }
+
+    /// <summary>
     ///     Gets the sync path toggle configurations
     /// </summary>
     Dictionary<string, ConfigEntry<bool>> SyncPathToggles { get; }
@@ -34,7 +39,7 @@ public interface IClientConfigService
     bool IsHeadless();
 
     /// <summary>
-    ///     Gets the default headless exclusions
+    ///     Gets the headless exclusion templates (written to Exclusions.json on first headless run)
     /// </summary>
-    List<string> GetHeadlessDefaultExclusions();
+    List<string> GetHeadlessExclusionTemplates();
 }

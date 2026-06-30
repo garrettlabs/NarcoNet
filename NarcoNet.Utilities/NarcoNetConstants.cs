@@ -7,54 +7,20 @@ public static class NarcoNetConstants
 {
     // Branding
     public const string ProductName = "NarcoNet";
-    public const string FullProductName = "MadManBeavis - NarcoNet";
     public const string Author = "MadManBeavis";
-    public const string Version = "1.0.0";
+    public const string PluginDisplayName = "MadManBeavis's NarcoNet";
+    public const string PluginDirectoryName = "MadManBeavis-NarcoNet";
 
-    // Plugin Information
+    // Plugin GUIDs
     public const string PluginGuid = "com.madmanbeavis.narconet";
-    public const string PluginName = "NarcoNet";
-    public const string PluginVersion = "1.0.0";
+    public const string ClientPluginGuid = PluginGuid + ".client";
+    public const string ServerPluginGuid = PluginGuid + ".server";
 
     // Directory Names
     public const string DataDirectoryName = "NarcoNet_Data";
     public const string PendingUpdatesDirectoryName = "PendingUpdates";
-    public const string LogFileName = "NarcoNet.log";
-    public const string RemovedFilesFileName = "RemovedFiles.json";
-    public const string UpdateManifestFileName = "UpdateManifest.json";
-    public const string PreviousSyncFileName = "PreviousSync.json";
 
-    // Updater
-    public const string UpdaterExecutableName = "NarcoNet.Updater.exe";
-
-    // Logging Prefixes
-    public const string LogPrefix = "[MadManBeavis-NarcoNet]";
-    public const string UpdaterLogPrefix = "[MadManBeavis-NarcoNet Updater]";
-
-    // UI Messages
-    public static class Messages
-    {
-        public const string UpdateRequired = "New shipment arrived! Update required, compadre.";
-        public const string UpdateOptional = "Fresh merchandise available - update when you're ready, amigo.";
-        public const string UpdateInProgress = "The courier is making deliveries...";
-        public const string UpdateComplete = "Delivery complete! The goods are stocked and ready.";
-        public const string UpdateFailed = "The shipment got intercepted - delivery failed!";
-        public const string UpdateCancelled = "Delivery cancelled - keeping the old inventory.";
-
-        public const string WaitingForTarkovClose = "Waiting for the client to close shop...";
-        public const string CopyingFiles = "Unloading the merchandise from the truck...";
-        public const string DeletingFiles = "Clearing out the old product...";
-
-        public const string ErrorTarkovNotFound =
-            "Can't find the operation base (EscapeFromTarkov.exe)! Make sure you're in the SPT territory, jefe!";
-
-        public const string ErrorDataDirectoryNotFound =
-            "The stash house (NarcoNet_Data) is missing! Run the BepInEx plugin first to set up the safe house!";
-
-        public const string ErrorInvalidPid = "Invalid client ID provided - the courier is confused!";
-    }
-
-    // URLs (for future updates/downloads)
+    // URLs
     public static class Urls
     {
         public const string Repository = "https://github.com/MadManBeavis/NarcoNet";

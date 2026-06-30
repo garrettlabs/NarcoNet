@@ -25,9 +25,9 @@ namespace NarcoNet.Server;
 [UsedImplicitly]
 public record ModMetadata : AbstractModMetadata
 {
-    public override string ModGuid { get; init; } = "com.madmanbeavis.narconet.server";
-    public override string Name { get; init; } = "NarcoNet";
-    public override string Author { get; init; } = "MadManBeavis";
+    public override string ModGuid { get; init; } = NarcoNetConstants.ServerPluginGuid;
+    public override string Name { get; init; } = NarcoNetConstants.ProductName;
+    public override string Author { get; init; } = NarcoNetConstants.Author;
     public override List<string>? Contributors { get; init; }
     public override Version Version { get; init; } = new(NarcoNetVersion.Version);
     public override Range SptVersion { get; init; } = new("~4.0.0");
@@ -46,7 +46,7 @@ public class NarcoNetServer(
     ILogger<NarcoNetServer> logger,
     ConfigService configService,
     NarcoNetHttpListener httpListener,
-    SyncService syncService)
+    FileWatcherService fileWatcherService)
     : IPreSptLoadModAsync
 {
     private static bool _loadFailed;
@@ -68,34 +68,22 @@ public class NarcoNetServer(
             }
 
 #if NARCONET_DEBUG_LOGGING
-            logger.LogDebug($"Mod path found: {modPath}");
+            logger.LogDebug("Mod path found: {ModPath}", modPath);
 #endif
 
             // Load configuration
             NarcoNetConfig config = await configService.LoadConfigAsync(modPath);
 #if NARCONET_DEBUG_LOGGING
-            logger.LogDebug($"Configuration loaded successfully");
-            logger.LogDebug($"Sync paths configured: {config.SyncPaths.Count}");
+            logger.LogDebug("Configuration loaded successfully");
+            logger.LogDebug("Sync paths configured: {SyncPathsCount}", config.SyncPaths.Count);
             foreach (var syncPath in config.SyncPaths)
             {
-                logger.LogDebug($"  - {syncPath.Path} (Enabled: {syncPath.Enabled}, RestartRequired: {syncPath.RestartRequired}, Enforced: {syncPath.Enforced})");
+                logger.LogDebug("  - {SyncPathPath} (Enabled: {SyncPathEnabled}, RestartRequired: {SyncPathRestartRequired}, Enforced: {SyncPathEnforced})", syncPath.Path, syncPath.Enabled, syncPath.RestartRequired, syncPath.Enforced);
             }
 #endif
 
-            // Detect file changes since last startup
-            await syncService.DetectStartupChangesAsync(config.SyncPaths, config);
-
-            // Check for files that will be synced to clients
-            string updaterPath = Path.Combine(Directory.GetCurrentDirectory(), "NarcoNet.Updater.exe");
-            string clientPluginDir = Path.Combine(Directory.GetCurrentDirectory(), @"..\", "BepInEx", "plugins", "MadManBeavis-NarcoNet");
-
-            logger.LogDebug(!File.Exists(updaterPath)
-                ? "NarcoNet.Updater.exe not found in SPT root - client updates disabled"
-                : "NarcoNet.Updater.exe found - client updates enabled");
-
-            logger.LogDebug(!Directory.Exists(clientPluginDir)
-                ? "BepInEx/plugins/MadManBeavis-NarcoNet directory not found - client plugin sync disabled"
-                : "BepInEx/plugins/MadManBeavis-NarcoNet directory found - client plugin sync enabled");
+            // Start watching for runtime file changes (invalidates hash cache on disk changes)
+            fileWatcherService.StartWatching(config.SyncPaths);
 
             // Initialize HTTP listener (only if load succeeded)
             if (!_loadFailed)

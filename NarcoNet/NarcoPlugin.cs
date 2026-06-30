@@ -1,17 +1,17 @@
 using System.Collections;
-using System.Diagnostics;
+using System.Text;
+using System.Text.RegularExpressions;
 
 using BepInEx;
 using BepInEx.Bootstrap;
 using BepInEx.Logging;
 using Comfort.Common;
 using EFT.UI;
-using NarcoNet.Models;
 using NarcoNet.Services;
+using NarcoNet.UI;
 using NarcoNet.Utilities;
 using SPT.Common.Utils;
 using UnityEngine;
-using static System.Diagnostics.Process;
 
 namespace NarcoNet;
 using SyncPathFileList = Dictionary<string, List<string>>;
@@ -20,19 +20,15 @@ using SyncPathModFiles = Dictionary<string, Dictionary<string, ModFile>>;
 /// <summary>
 ///     Main NarcoNet client plugin that coordinates file synchronization between SPT server and client
 /// </summary>
-[BepInPlugin("com.madmanbeavis.narconet.client", "MadManBeavis's NarcoNet", NarcoNetVersion.Version)]
+[BepInPlugin(NarcoNetConstants.ClientPluginGuid, NarcoNetConstants.PluginDisplayName, NarcoNetVersion.Version)]
 public class NarcoPlugin : BaseUnityPlugin, IDisposable
 {
     // Static paths
-    private static readonly string NarcoNetDir = Path.Combine(Directory.GetCurrentDirectory(), "NarcoNet_Data");
-    private static readonly string PendingUpdatesDir = Path.Combine(NarcoNetDir, "PendingUpdates");
-    private static readonly string PreviousSyncPath = Path.Combine(NarcoNetDir, "PreviousSync.json");
+    private static readonly string NarcoNetDir = Path.Combine(Directory.GetCurrentDirectory(), NarcoNetConstants.DataDirectoryName);
+    private static readonly string PendingUpdatesDir = Path.Combine(NarcoNetDir, NarcoNetConstants.PendingUpdatesDirectoryName);
     private static readonly string LocalHashesPath = Path.Combine(NarcoNetDir, "LocalHashes.json");
-    private static readonly string RemovedFilesPath = Path.Combine(NarcoNetDir, "RemovedFiles.json");
     private static readonly string LocalExclusionsPath = Path.Combine(NarcoNetDir, "Exclusions.json");
-    private static readonly string UpdaterPath = Path.Combine(Directory.GetCurrentDirectory(), "NarcoNet.Updater.exe");
-
-    public new static readonly ManualLogSource Logger = BepInEx.Logging.Logger.CreateLogSource("NarcoNet");
+    public new static readonly ManualLogSource Logger = BepInEx.Logging.Logger.CreateLogSource(NarcoNetConstants.ProductName);
 
     // Services
     private readonly IClientUIService _uiService;
@@ -46,14 +42,15 @@ public class NarcoPlugin : BaseUnityPlugin, IDisposable
     private SyncPathFileList _updatedFiles = [];
     private SyncPathFileList _removedFiles = [];
     private SyncPathFileList _createdDirectories = [];
-    private SyncPathModFiles _previousSync = [];
+    private SyncPathModFiles _localModFiles = [];
     private SyncPathModFiles _remoteModFiles = [];
     private List<string> _localExclusions = [];
     private List<string>? _optional;
     private List<string>? _required;
     private List<string>? _noRestart;
-    private bool _pluginFinished;
+    private volatile bool _pluginFinished;
     private CancellationTokenSource _cts = new();
+    private const string NarcoNetOldExtension = ".narconet_old";
 
     /// <summary>
     ///     Constructor - initializes services
@@ -119,12 +116,12 @@ public class NarcoPlugin : BaseUnityPlugin, IDisposable
             .Where(syncPath => syncPath.Enforced)
             .SelectMany(syncPath =>
                 _addedFiles[syncPath.Path]
-                    .Select(file => $"ADDED {file}")
-                    .Concat(_updatedFiles[syncPath.Path].Select(file => $"UPDATED {file}"))
+                    .Select(file => $"ADDED {file} [enforced]")
+                    .Concat(_updatedFiles[syncPath.Path].Select(file => $"UPDATED {file} [enforced]"))
                     .Concat(_configService.DeleteRemovedFiles.Value
-                        ? _removedFiles[syncPath.Path].Select(file => $"REMOVED {file}")
+                        ? _removedFiles[syncPath.Path].Select(file => $"REMOVED {file} [enforced]")
                         : [])
-                    .Concat(_createdDirectories[syncPath.Path].Select(file => $@"CREATED {file}\"))
+                    .Concat(_createdDirectories[syncPath.Path].Select(file => $@"CREATED {file}\ [enforced]"))
             )
             .ToList();
 
@@ -140,6 +137,27 @@ public class NarcoPlugin : BaseUnityPlugin, IDisposable
                     .Concat(_createdDirectories[syncPath.Path])
             )
             .ToList();
+
+    /// <summary>
+    ///     Whether there are non-enforced removed files that the user could choose to keep.
+    /// </summary>
+    private bool HasRemovableFiles =>
+        _configService.DeleteRemovedFiles.Value &&
+        EnabledSyncPaths.Any(sp =>
+            !sp.Enforced &&
+            _removedFiles.TryGetValue(sp.Path, out var files) &&
+            files.Count > 0);
+
+    /// <summary>
+    ///     Returns a removed files list containing only enforced-path removals.
+    ///     Used when the user checks "Keep deleted files" — non-enforced removals are skipped
+    ///     while enforced removals are still applied.
+    /// </summary>
+    private SyncPathFileList FilterEnforcedRemovals() =>
+        EnabledSyncPaths.ToDictionary(
+            sp => sp.Path,
+            sp => sp.Enforced ? _removedFiles[sp.Path] : new List<string>(),
+            StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     ///     Unity lifecycle - registers console command
@@ -203,7 +221,6 @@ public class NarcoPlugin : BaseUnityPlugin, IDisposable
         _syncService.AnalyzeModFiles(
             localModFiles,
             _remoteModFiles,
-            _previousSync,
             EnabledSyncPaths,
             out _addedFiles,
             out _updatedFiles,
@@ -211,25 +228,22 @@ public class NarcoPlugin : BaseUnityPlugin, IDisposable
             out _createdDirectories
         );
 
-        if (UpdateCount > 0)
+        if (UpdateCount <= 0) return;
+        if (SilentMode)
         {
-            if (SilentMode)
-            {
-                Task.Run(() => SyncMods(_addedFiles, _updatedFiles, _createdDirectories));
-            }
-            else
-            {
-                _uiService.ShowUpdateWindow(
-                    Optional,
-                    Required,
-                    () => Task.Run(() => SyncMods(_addedFiles, _updatedFiles, _createdDirectories)),
-                    Required.Count != 0 && Optional.Count == 0 ? null : SkipUpdatingMods
-                );
-            }
+            Task.Run(() => SyncMods(_addedFiles, _updatedFiles, _createdDirectories, _removedFiles));
         }
         else
         {
-            _syncService.WriteNarcoNetData(_remoteModFiles, _removedFiles, EnabledSyncPaths, _configService.DeleteRemovedFiles.Value);
+            _uiService.ShowUpdateWindow(
+                Optional,
+                Required,
+                (keepDeletedFiles) => Task.Run(() => SyncMods(
+                    _addedFiles, _updatedFiles, _createdDirectories,
+                    keepDeletedFiles ? FilterEnforcedRemovals() : _removedFiles)),
+                Required.Count != 0 && Optional.Count == 0 ? null : SkipUpdatingMods,
+                HasRemovableFiles
+            );
         }
     }
 
@@ -257,12 +271,12 @@ public class NarcoPlugin : BaseUnityPlugin, IDisposable
         );
 
         if (
-            enforcedAddedFiles.Values.Any(files => files.Any())
-            || enforcedUpdatedFiles.Values.Any(files => files.Any())
-            || enforcedCreatedDirectories.Values.Any(files => files.Any())
+            enforcedAddedFiles.Values.Any(files => files.Count != 0)
+            || enforcedUpdatedFiles.Values.Any(files => files.Count != 0)
+            || enforcedCreatedDirectories.Values.Any(files => files.Count != 0)
         )
         {
-            Task.Run(() => SyncMods(enforcedAddedFiles, enforcedUpdatedFiles, enforcedCreatedDirectories));
+            Task.Run(() => SyncMods(enforcedAddedFiles, enforcedUpdatedFiles, enforcedCreatedDirectories, FilterEnforcedRemovals()));
         }
         else
         {
@@ -275,21 +289,21 @@ public class NarcoPlugin : BaseUnityPlugin, IDisposable
     ///     Downloads and synchronizes mod files, showing progress UI
     /// </summary>
     private async Task SyncMods(SyncPathFileList filesToAdd, SyncPathFileList filesToUpdate,
-        SyncPathFileList directoriesToCreate, SyncPathFileList filesToRemove = null!)
+        SyncPathFileList directoriesToCreate, SyncPathFileList filesToRemove)
     {
         _uiService.HideAllWindows();
-        
+
+        var effectiveRemovedFiles = filesToRemove;
 
         if (!_configService.IsHeadless())
         {
             _uiService.ShowProgressWindow();
         }
 
-        Progress<(int current, int total)> progress = new(p =>
-        {
-            _uiService.UpdateProgress(p.current, p.total,
-                Required.Count != 0 || NoRestart.Count != 0 ? null : () => Task.Run(CancelUpdatingMods));
-        });
+        Progress<(int current, int total)> progress = new(p => _uiService.UpdateProgress(p.current, p.total,
+                Required.Count != 0 || NoRestart.Count != 0 ? null : () => Task.Run(CancelUpdatingMods)));
+
+        Progress<(long current, long total)> byteProgress = new(p => _uiService.UpdateByteProgress(p.current, p.total));
 
         try
         {
@@ -297,11 +311,12 @@ public class NarcoPlugin : BaseUnityPlugin, IDisposable
                 filesToAdd,
                 filesToUpdate,
                 directoriesToCreate,
-                filesToRemove ?? _removedFiles,
+                effectiveRemovedFiles,
                 EnabledSyncPaths,
                 _configService.DeleteRemovedFiles.Value,
                 PendingUpdatesDir,
                 progress,
+                byteProgress,
                 _cts.Token
             );
 
@@ -311,24 +326,19 @@ public class NarcoPlugin : BaseUnityPlugin, IDisposable
             {
                 if (NoRestartMode)
                 {
-                    // Only write sync data if no restart is required (updates were applied immediately)
-                    _syncService.WriteNarcoNetData(_remoteModFiles, _removedFiles, EnabledSyncPaths, _configService.DeleteRemovedFiles.Value);
-                    Directory.Delete(PendingUpdatesDir, true);
+                    // No restart-required files changed — updates were applied immediately.
+                    if (Directory.Exists(PendingUpdatesDir))
+                    {
+                        Directory.Delete(PendingUpdatesDir, true);
+                    }
                     _pluginFinished = true;
                 }
                 else
                 {
-                    // Write the update manifest for the updater to process
-                    _syncService.WriteUpdateManifest(_addedFiles, _updatedFiles, _createdDirectories, _removedFiles, EnabledSyncPaths, _configService.DeleteRemovedFiles.Value, PendingUpdatesDir, _remoteModFiles);
-
                     if (!_configService.IsHeadless())
-                    {
-                        _uiService.ShowRestartWindow(StartUpdaterProcess);
-                    }
+                        _uiService.ShowRestartWindow(() => ApplyPendingUpdatesInProcess(effectiveRemovedFiles));
                     else
-                    {
-                        StartUpdaterProcess();
-                    }
+                        ApplyPendingUpdatesInProcess(effectiveRemovedFiles);
                 }
             }
         }
@@ -361,50 +371,148 @@ public class NarcoPlugin : BaseUnityPlugin, IDisposable
     }
 
     /// <summary>
-    ///     Starts the external updater process to apply pending updates and restart the game
+    ///     Applies pending restart-required updates in-process, then exits.
+    ///     Copies staged files from PendingUpdates/, creates directories, and
+    ///     deletes removed files — all using rename-then-copy/rename fallback
+    ///     for locked DLLs.
     /// </summary>
-    private void StartUpdaterProcess()
+    private void ApplyPendingUpdatesInProcess(SyncPathFileList effectiveRemovedFiles)
     {
-        List<string> options = [];
+        Logger.LogInfo("Applying restart-required updates in-process...");
 
-        if (_configService.IsHeadless())
+        string gameRoot = Directory.GetCurrentDirectory();
+
+        try
         {
-            options.Add("--silent");
+            // Copy files from PendingUpdates/ to game root
+            if (Directory.Exists(PendingUpdatesDir))
+            {
+                foreach (string src in Directory.EnumerateFiles(PendingUpdatesDir, "*", SearchOption.AllDirectories))
+                {
+                    string relativePath = src.Substring(PendingUpdatesDir.Length)
+                        .TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                    string dst = Path.Combine(gameRoot, relativePath);
+                    string? dstDir = Path.GetDirectoryName(dst);
+                    if (!string.IsNullOrEmpty(dstDir) && !Directory.Exists(dstDir))
+                        Directory.CreateDirectory(dstDir);
+                    try
+                    {
+                        File.Copy(src, dst, true);
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                    {
+                        string backup = dst + NarcoNetOldExtension;
+                        if (File.Exists(backup)) File.Delete(backup);
+                        File.Move(dst, backup);
+                        File.Copy(src, dst);
+                        Logger.LogInfo($"Replaced locked file via rename: {relativePath}");
+                    }
+                    Logger.LogInfo($"Copied: {relativePath}");
+                }
+            }
+
+            // Create directories (restart-required paths only)
+            foreach (SyncPath syncPath in EnabledSyncPaths.Where(sp => sp.RestartRequired))
+            {
+                foreach (string dir in _createdDirectories[syncPath.Path])
+                {
+                    try
+                    {
+                        string fullPath = Path.Combine(gameRoot, dir);
+                        Directory.CreateDirectory(fullPath);
+                        Logger.LogInfo($"Created directory: {dir}");
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.LogError($"Failed to create directory '{dir}': {ex.Message}");
+                    }
+                }
+            }
+
+            // Delete files (restart-required paths, respecting DeleteRemovedFiles/Enforced)
+            foreach (SyncPath syncPath in EnabledSyncPaths.Where(sp => sp.RestartRequired))
+            {
+                if (!(_configService.DeleteRemovedFiles.Value || syncPath.Enforced))
+                    continue;
+
+                if (!effectiveRemovedFiles.TryGetValue(syncPath.Path, out var removeFiles))
+                    continue;
+
+                foreach (string file in removeFiles)
+                {
+                    try
+                    {
+                        string fullPath = Path.Combine(gameRoot, file);
+                        if (File.Exists(fullPath))
+                        {
+                            try
+                            {
+                                File.Delete(fullPath);
+                            }
+                            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                            {
+                                string backup = fullPath + NarcoNetOldExtension;
+                                if (File.Exists(backup)) File.Delete(backup);
+                                File.Move(fullPath, backup);
+                                Logger.LogInfo($"Renamed locked file for deletion: {file}");
+                            }
+                            Logger.LogInfo($"Deleted: {file}");
+                        }
+                        else if (Directory.Exists(fullPath))
+                        {
+                            Directory.Delete(fullPath, true);
+                            Logger.LogInfo($"Deleted directory: {file}");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.LogError($"Failed to delete '{file}': {ex.Message}");
+                    }
+                }
+            }
+
+            // Clean up
+            if (Directory.Exists(PendingUpdatesDir))
+                Directory.Delete(PendingUpdatesDir, true);
+
+            Logger.LogInfo("Restart-required updates applied successfully. Exiting for restart.");
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError($"Failed to apply pending updates in-process: {ex.Message}");
+            Logger.LogError($"Stack trace: {ex.StackTrace}");
         }
 
-        Logger.LogInfo($"Starting updater with options: {string.Join(" ", options)} {GetCurrentProcess().Id} with executable at {UpdaterPath}");
-        ProcessStartInfo updaterStartInfo = new()
-        {
-            FileName = UpdaterPath,
-            Arguments = string.Join(" ", options) + " " + GetCurrentProcess().Id,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-
-        Process updaterProcess = new() { StartInfo = updaterStartInfo };
-
-        updaterProcess.Start();
         Application.Quit();
     }
 
-    private static string? GetActiveProfileId()
+    /// <summary>
+    ///     Removes .narconet_old files left behind by the rename-then-copy update strategy.
+    ///     These are DLLs that were memory-mapped when we updated them — we renamed them
+    ///     out of the way and copied the new version. Now that the process restarted,
+    ///     the old files are no longer mapped and can be deleted.
+    /// </summary>
+    private static void CleanupRenamedFiles()
     {
         try
         {
-            if (!Singleton<EFT.TarkovApplication>.Instantiated)
+            string gameRoot = Directory.GetCurrentDirectory();
+            foreach (string file in Directory.EnumerateFiles(gameRoot, "*"+NarcoNetOldExtension, SearchOption.AllDirectories))
             {
-                return null;
+                try
+                {
+                    File.Delete(file);
+                    Logger.LogDebug($"Cleaned up old file: {file}");
+                }
+                catch (Exception ex)
+                {
+                    Logger.LogWarning($"Could not delete {file}: {ex.Message}");
+                }
             }
-
-            var session = Singleton<EFT.TarkovApplication>.Instance?.Session;
-            return ProfileBypass.NormalizeProfileIdentifier(session?.Profile?.Id);
         }
-        catch (Exception e)
+        catch (Exception ex)
         {
-#if NARCONET_DEBUG_LOGGING
-            Logger.LogDebug($"Could not evaluate active profile for NarcoNet bypass: {e.GetType().Name}: {e.Message}");
-#endif
-            return null;
+            Logger.LogWarning($"Error during old file cleanup: {ex.Message}");
         }
     }
 
@@ -414,11 +522,21 @@ public class NarcoPlugin : BaseUnityPlugin, IDisposable
     private IEnumerator StartPlugin()
     {
         _cts = new CancellationTokenSource();
-        if (Directory.Exists(PendingUpdatesDir) || File.Exists(RemovedFilesPath))
+
+        // Clean up .narconet_old files left over from rename-then-copy updates
+        CleanupRenamedFiles();
+
+        if (Directory.Exists(PendingUpdatesDir))
         {
-            Logger.LogWarning(
-                "Found pending updates from previous session. Check 'NarcoNet_Data/Updater.log' for details."
-            );
+            Logger.LogWarning("Cleaning up stale pending updates from previous session.");
+            try
+            {
+                Directory.Delete(PendingUpdatesDir, true);
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning($"Failed to clean up pending updates directory: {ex.Message}");
+            }
         }
 
         Logger.LogDebug("Requesting server version...");
@@ -477,9 +595,6 @@ public class NarcoPlugin : BaseUnityPlugin, IDisposable
             yield break;
         }
 
-        Logger.LogDebug("Checking for data migration...");
-        new Migrator(Directory.GetCurrentDirectory()).TryMigrate(Info.Metadata.Version, syncPaths);
-
         Logger.LogDebug("Loading configuration...");
         try
         {
@@ -493,40 +608,13 @@ public class NarcoPlugin : BaseUnityPlugin, IDisposable
             );
         }
 
-        Logger.LogDebug("Requesting ignored profiles...");
-        var ignoredProfiles = new List<string>();
-        Task<List<string>> ignoredProfilesTask = _server.GetIgnoredProfiles();
-        yield return new WaitUntil(() => ignoredProfilesTask is { IsCompleted: true });
-        try
-        {
-            ignoredProfiles = ignoredProfilesTask.Result ?? [];
-        }
-        catch (Exception e)
-        {
-            Logger.LogWarning($"Failed to get ignored profiles: {e.GetType().Name}: {e.Message}. Continuing normal NarcoNet sync.");
-        }
-
-        Logger.LogDebug("Loading previous sync data...");
-        try
-        {
-            _previousSync = _initService.LoadPreviousSync(PreviousSyncPath);
-        }
-        catch (Exception e)
-        {
-            Logger.LogError(e);
-            Chainloader.DependencyErrors.Add(
-                $"Could not load {Info.Metadata.Name} due to malformed previous sync data. Please check NarcoNet_Data/PreviousSync.json for errors or delete it, and try again."
-            );
-            yield break;
-        }
-
         Logger.LogDebug("Loading local exclusions...");
         try
         {
             _localExclusions = _initService.LoadLocalExclusions(
                 LocalExclusionsPath,
                 _configService.IsHeadless(),
-                _configService.GetHeadlessDefaultExclusions()
+                _configService.GetHeadlessExclusionTemplates()
             );
         }
         catch (Exception e)
@@ -559,35 +647,27 @@ public class NarcoPlugin : BaseUnityPlugin, IDisposable
         Logger.LogDebug("Waiting for UI to initialize...");
         yield return new WaitUntil(() => Singleton<CommonUI>.Instantiated);
 
-        string? activeProfileId = GetActiveProfileId();
-        if (ProfileBypass.ShouldBypass(activeProfileId, ignoredProfiles))
-        {
-            Task notifyBypassTask = _server.NotifyProfileBypass(activeProfileId!);
-            yield return new WaitUntil(() => notifyBypassTask.IsCompleted);
-
-            Logger.LogInfo($"NarcoNet sync bypassed for configured profile '{activeProfileId}'.");
-            yield break;
-        }
-
-#if NARCONET_DEBUG_LOGGING
-        if (ignoredProfiles.Count > 0 && string.IsNullOrEmpty(activeProfileId))
-        {
-            Logger.LogDebug("Ignored profiles are configured, but the active profile could not be evaluated. Continuing normal NarcoNet sync.");
-        }
-#endif
-
         Logger.LogDebug("Hashing local files...");
         if (exclusions == null)
         {
             yield break;
         }
 
+        if (!_configService.IsHeadless())
         {
+            _uiService.ShowDiagnosticWindow();
+        }
+        _uiService.UpdateDiagnosticStep("local_hash", "Hashing local files...", DiagnosticState.InProgress);
+
+        {
+            List<Regex> remoteExclusionRegex = exclusions.Select(Glob.CreateNoEnd).ToList();
+            List<Regex> localExclusionRegex = _localExclusions.Select(Glob.CreateNoEnd).ToList();
+
             Task<SyncPathModFiles> localModFilesTask = Sync.HashLocalFiles(
                 Directory.GetCurrentDirectory(),
                 EnabledSyncPaths,
-                exclusions.Select(Glob.Create).ToList(),
-                _localExclusions.Select(Glob.Create).ToList()
+                remoteExclusionRegex,
+                localExclusionRegex
             );
 
             yield return new WaitUntil(() => localModFilesTask.IsCompleted);
@@ -600,203 +680,226 @@ public class NarcoPlugin : BaseUnityPlugin, IDisposable
                     Logger.LogError($"Inner exception: {localModFilesTask.Exception.InnerException.GetType().Name}: {localModFilesTask.Exception.InnerException.Message}");
                 }
                 Logger.LogError($"Stack trace: {localModFilesTask.Exception?.StackTrace}");
+                _uiService.UpdateDiagnosticStep("local_hash", "Error hashing local files", DiagnosticState.Error);
+                Chainloader.DependencyErrors.Add(
+                    $"Could not load {Info.Metadata.Name} due to error hashing local files: {localModFilesTask.Exception?.InnerException?.Message ?? localModFilesTask.Exception?.Message}"
+                );
+                _pluginFinished = true;
                 yield break;
             }
 
-            SyncPathModFiles localModFiles = localModFilesTask.Result;
+            _localModFiles = localModFilesTask.Result;
+            SyncPathModFiles localModFiles = _localModFiles;
+            int localFileCount = localModFiles.Sum(kvp => kvp.Value.Count);
 
-            Logger.LogDebug($"Hashed {localModFiles.Sum(kvp => kvp.Value.Count)} local files");
+            Logger.LogDebug($"Hashed {localFileCount} local files");
+            _uiService.UpdateDiagnosticStep("local_hash", $"Done — {localFileCount} files hashed", DiagnosticState.Done);
 
             VFS.WriteTextFile(LocalHashesPath, Json.Serialize(localModFiles));
 
-            // Try incremental sync first
-            Logger.LogDebug("Checking for incremental sync support...");
-            ClientSyncState? syncState = _syncService.LoadSyncState();
-            bool useIncrementalSync = false;
-
-            if (syncState != null)
+            Logger.LogDebug("Requesting remote hashes...");
+            _uiService.UpdateDiagnosticStep("remote_hash", "Fetching remote hashes...", DiagnosticState.InProgress);
+            Task<SyncPathModFiles> remoteHashesTask =
+                _server.GetRemoteHashes(EnabledSyncPaths);
+            yield return new WaitUntil(() => remoteHashesTask is { IsCompleted: true });
+            try
             {
-                Logger.LogDebug($"Found sync state at sequence {syncState.LastSequence} from {syncState.LastSyncTime}");
-                
-                // Get current server sequence
-                Task<long> currentSeqTask = _server.GetCurrentSequence();
-                yield return new WaitUntil(() => currentSeqTask.IsCompleted);
-                
-                if (!currentSeqTask.IsFaulted && currentSeqTask.Result > syncState.LastSequence)
+                SyncPathModFiles? remoteHashes = remoteHashesTask.Result;
+                if (remoteHashes == null)
                 {
-                    Logger.LogDebug($"Server has new changes (sequence {currentSeqTask.Result})");
-                    
-                    // Get incremental changes
-                    Task<ChangesResponse> changesTask = _server.GetChangesSince(syncState.LastSequence);
-                    yield return new WaitUntil(() => changesTask.IsCompleted);
-                    
-                    if (!changesTask.IsFaulted)
-                    {
-                        ChangesResponse changes = changesTask.Result;
-                        Logger.LogInfo($"Using incremental sync: {changes.Changes.Count} changes since last sync");
-                        
-                        // Apply incremental changes
-                        Task<(SyncPathFileList, SyncPathFileList, SyncPathFileList)> applyTask = 
-                            _syncService.ApplyIncrementalChangesAsync(changes, EnabledSyncPaths, _cts.Token);
-                        yield return new WaitUntil(() => applyTask.IsCompleted);
-                        
-                        if (!applyTask.IsFaulted)
-                        {
-                            (_addedFiles, _updatedFiles, _removedFiles) = applyTask.Result;
-                            
-                            // Create empty directories list for incremental sync
-                            _createdDirectories = EnabledSyncPaths.ToDictionary(
-                                sp => sp.Path, 
-                                _ => new List<string>()
-                            );
-                            
-                            useIncrementalSync = true;
-                            
-                            // Save updated sequence
-                            _syncService.SaveSyncState(changes.CurrentSequence);
-                            
-                            // Still need remote mod files for WriteNarcoNetData
-                            Logger.LogDebug("Requesting remote hashes for state persistence...");
-                            Task<Dictionary<string, Dictionary<string, ModFile>>> remoteHashesTask =
-                                _server.GetRemoteHashes(EnabledSyncPaths);
-                            yield return new WaitUntil(() => remoteHashesTask.IsCompleted);
-                            
-                            if (!remoteHashesTask.IsFaulted)
-                            {
-                                _remoteModFiles = remoteHashesTask.Result;
-                            }
-                        }
-                        else
-                        {
-                            Logger.LogWarning($"Failed to apply incremental changes, falling back to full sync: {applyTask.Exception?.Message}");
-                        }
-                    }
-                    else
-                    {
-                        Logger.LogWarning($"Failed to get incremental changes, falling back to full sync: {changesTask.Exception?.Message}");
-                    }
-                }
-                else if (currentSeqTask.Result == syncState.LastSequence)
-                {
-                    Logger.LogInfo("No changes on server since last sync");
-                    _addedFiles = EnabledSyncPaths.ToDictionary(sp => sp.Path, _ => new List<string>());
-                    _updatedFiles = EnabledSyncPaths.ToDictionary(sp => sp.Path, _ => new List<string>());
-                    _removedFiles = EnabledSyncPaths.ToDictionary(sp => sp.Path, _ => new List<string>());
-                    _createdDirectories = EnabledSyncPaths.ToDictionary(sp => sp.Path, _ => new List<string>());
-                    useIncrementalSync = true;
-                    
-                    // Still need remote mod files
-                    Task<Dictionary<string, Dictionary<string, ModFile>>> remoteHashesTask =
-                        _server.GetRemoteHashes(EnabledSyncPaths);
-                    yield return new WaitUntil(() => remoteHashesTask.IsCompleted);
-                    if (!remoteHashesTask.IsFaulted)
-                    {
-                        _remoteModFiles = remoteHashesTask.Result;
-                    }
-                }
-            }
-            else
-            {
-                Logger.LogDebug("No sync state found, will perform full sync");
-            }
-
-            // Fall back to full hash comparison if incremental sync not available/failed
-            if (!useIncrementalSync)
-            {
-                Logger.LogDebug("Performing full sync (requesting remote hashes)...");
-                Task<Dictionary<string, Dictionary<string, ModFile>>> remoteHashesTask =
-                    _server.GetRemoteHashes(EnabledSyncPaths);
-                yield return new WaitUntil(() => remoteHashesTask is { IsCompleted: true });
-                try
-                {
-                    Dictionary<string, Dictionary<string, ModFile>>? remoteHashes = remoteHashesTask.Result;
-                    if (remoteHashes == null)
-                    {
-                        Logger.LogError("Remote hashes task returned null");
-                        yield break;
-                    }
-
-                    _remoteModFiles = remoteHashes;
-                }
-                catch (Exception e)
-                {
-                    Logger.LogError("Failed to get remote hashes");
-                    Logger.LogError($"  Exception Type: {e.GetType().FullName}");
-                    Logger.LogError($"  Message: {(string.IsNullOrEmpty(e.Message) ? "<empty>" : e.Message)}");
-
-                    if (e.InnerException != null)
-                    {
-                        Logger.LogError($"  Inner Exception: {e.InnerException.GetType().FullName}");
-                        Logger.LogError($"  Inner Message: {(string.IsNullOrEmpty(e.InnerException.Message) ? "<empty>" : e.InnerException.Message)}");
-
-                        // Check for deeper nested exceptions
-                        if (e.InnerException.InnerException != null)
-                        {
-                            Logger.LogError($"  Nested Exception: {e.InnerException.InnerException.GetType().FullName}");
-                            Logger.LogError($"  Nested Message: {(string.IsNullOrEmpty(e.InnerException.InnerException.Message) ? "<empty>" : e.InnerException.InnerException.Message)}");
-                        }
-                    }
-
-                    Logger.LogError($"  Stack Trace: {e.StackTrace}");
-
-                    string errorMsg = string.IsNullOrEmpty(e.Message) ? e.GetType().Name : e.Message;
-                    Chainloader.DependencyErrors.Add(
-                        $"Could not load {Info.Metadata.Name} due to error requesting server mod list: {errorMsg}"
-                    );
+                    Logger.LogError("Remote hashes task returned null");
                     yield break;
                 }
 
-                Logger.LogDebug("Comparing local and remote files...");
-                try
+                _remoteModFiles = remoteHashes;
+                WriteDiagDump("RemoteHashes_Raw.txt", _remoteModFiles, "Raw server response (before client-side filtering)");
+                FilterRemoteModFiles(remoteExclusionRegex, localExclusionRegex);
+                WriteDiagDump("RemoteHashes_Filtered.txt", _remoteModFiles, "After client-side FilterRemoteModFiles");
+
+                int remoteFileCount = _remoteModFiles.Sum(kvp => kvp.Value.Count);
+                _uiService.UpdateDiagnosticStep("remote_hash", $"Done — {remoteFileCount} files from server", DiagnosticState.Done);
+            }
+            catch (Exception e)
+            {
+                _uiService.UpdateDiagnosticStep("remote_hash", "Error fetching remote hashes", DiagnosticState.Error);
+                Logger.LogError("Failed to get remote hashes");
+                Logger.LogError($"  Exception Type: {e.GetType().FullName}");
+                Logger.LogError($"  Message: {(string.IsNullOrEmpty(e.Message) ? "<empty>" : e.Message)}");
+
+                if (e.InnerException != null)
                 {
-                    AnalyzeModFiles(localModFiles);
-                }
-                catch (Exception e)
-                {
-                    Logger.LogError($"Failed to analyze mod files: {e.GetType().Name}: {e.Message}");
-                    Logger.LogError($"Stack trace: {e.StackTrace}");
-                    if (e.InnerException != null)
+                    Logger.LogError($"  Inner Exception: {e.InnerException.GetType().FullName}");
+                    Logger.LogError($"  Inner Message: {(string.IsNullOrEmpty(e.InnerException.Message) ? "<empty>" : e.InnerException.Message)}");
+
+                    // Check for deeper nested exceptions
+                    if (e.InnerException.InnerException != null)
                     {
-                        Logger.LogError($"Inner exception: {e.InnerException.GetType().Name}: {e.InnerException.Message}");
+                        Logger.LogError($"  Nested Exception: {e.InnerException.InnerException.GetType().FullName}");
+                        Logger.LogError($"  Nested Message: {(string.IsNullOrEmpty(e.InnerException.InnerException.Message) ? "<empty>" : e.InnerException.InnerException.Message)}");
                     }
-                    Chainloader.DependencyErrors.Add(
-                        $"Could not load {Info.Metadata.Name} due to error analyzing mod files: {e.Message}"
-                    );
-                    yield break;
                 }
-                
-                // Initialize sync state after successful full sync
-                Task<long> seqTask = _server.GetCurrentSequence();
-                yield return new WaitUntil(() => seqTask.IsCompleted);
-                if (!seqTask.IsFaulted)
+
+                Logger.LogError($"  Stack Trace: {e.StackTrace}");
+
+                string errorMsg = string.IsNullOrEmpty(e.Message) ? e.GetType().Name : e.Message;
+                Chainloader.DependencyErrors.Add(
+                    $"Could not load {Info.Metadata.Name} due to error requesting server mod list: {errorMsg}"
+                );
+                yield break;
+            }
+
+            Logger.LogDebug("Comparing local and remote files...");
+            _uiService.UpdateDiagnosticStep("compare", "Comparing files...", DiagnosticState.InProgress);
+            try
+            {
+                AnalyzeModFiles(localModFiles);
+
+                int added = _addedFiles.Sum(kvp => kvp.Value.Count);
+                int updated = _updatedFiles.Sum(kvp => kvp.Value.Count);
+                int removed = _removedFiles.Sum(kvp => kvp.Value.Count);
+                _uiService.UpdateDiagnosticStep("compare", $"Done — {added} added, {updated} updated, {removed} removed", DiagnosticState.Done);
+
+                _uiService.SetDiagnosticShowFilesAction(() =>
+                    _uiService.ShowFileComparisonWindow(_localModFiles, _remoteModFiles));
+
+                if (_configService.AutoCloseDiagnostic.Value)
                 {
-                    _syncService.SaveSyncState(seqTask.Result);
-                    Logger.LogDebug($"Initialized sync state at sequence {seqTask.Result}");
+                    _uiService.HideDiagnosticWindow();
+                }
+            }
+            catch (Exception e)
+            {
+                _uiService.UpdateDiagnosticStep("compare", "Error comparing files", DiagnosticState.Error);
+                Logger.LogError($"Failed to analyze mod files: {e.GetType().Name}: {e.Message}");
+                Logger.LogError($"Stack trace: {e.StackTrace}");
+                if (e.InnerException != null)
+                {
+                    Logger.LogError($"Inner exception: {e.InnerException.GetType().Name}: {e.InnerException.Message}");
+                }
+                Chainloader.DependencyErrors.Add(
+                    $"Could not load {Info.Metadata.Name} due to error analyzing mod files: {e.Message}"
+                );
+            }
+        }
+    }
+
+    /// <summary>
+    ///     Removes excluded files from _remoteModFiles so they are never downloaded.
+    ///     Remote exclusions always apply; local exclusions apply only on non-enforced paths.
+    /// </summary>
+    private void FilterRemoteModFiles(List<Regex> remoteExclusions, List<Regex> localExclusions)
+    {
+        int removedCount = 0;
+        var filteredLog = new StringBuilder();
+        filteredLog.AppendLine($"# FilterRemoteModFiles Diagnostic");
+        filteredLog.AppendLine($"# Generated: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC");
+        filteredLog.AppendLine($"# Remote exclusion patterns ({remoteExclusions.Count}):");
+        foreach (Regex r in remoteExclusions)
+            filteredLog.AppendLine($"#   {r}");
+        filteredLog.AppendLine($"# Local exclusion patterns ({localExclusions.Count}):");
+        foreach (Regex r in localExclusions)
+            filteredLog.AppendLine($"#   {r}");
+        filteredLog.AppendLine($"# EnabledSyncPaths ({EnabledSyncPaths.Count}):");
+        foreach (SyncPath sp in EnabledSyncPaths)
+            filteredLog.AppendLine($"#   {sp.Path} (Enforced={sp.Enforced})");
+        filteredLog.AppendLine($"# RemoteModFiles keys ({_remoteModFiles.Count}):");
+        foreach (string key in _remoteModFiles.Keys)
+            filteredLog.AppendLine($"#   '{key}' ({_remoteModFiles[key].Count} files)");
+        filteredLog.AppendLine($"#");
+        filteredLog.AppendLine($"# Removed files:");
+
+        foreach (SyncPath syncPath in EnabledSyncPaths)
+        {
+            if (!_remoteModFiles.TryGetValue(syncPath.Path, out var files))
+            {
+                filteredLog.AppendLine($"# WARN: TryGetValue FAILED for syncPath '{syncPath.Path}'");
+                continue;
+            }
+
+            List<string> keysToRemove = [];
+            foreach (string filePath in files.Keys)
+            {
+                string normalized = filePath.Replace(@"\", "/");
+                Regex? matchedRemote = remoteExclusions.FirstOrDefault(r => r.IsMatch(normalized));
+                if (matchedRemote != null)
+                {
+                    keysToRemove.Add(filePath);
+                    filteredLog.AppendLine($"REMOTE_EXCL | {filePath} | pattern: {matchedRemote}");
+                    continue;
+                }
+
+                if (syncPath.Enforced) continue;
+                {
+                    Regex? matchedLocal = localExclusions.FirstOrDefault(r => r.IsMatch(normalized));
+                    if (matchedLocal == null) continue;
+                    keysToRemove.Add(filePath);
+                    filteredLog.AppendLine($"LOCAL_EXCL  | {filePath} | pattern: {matchedLocal}");
                 }
             }
 
-            // Process updates regardless of sync method
-            if (useIncrementalSync && UpdateCount > 0)
+            foreach (string key in keysToRemove)
             {
-                Logger.LogDebug("Processing incremental updates...");
-                if (SilentMode)
+                files.Remove(key);
+                removedCount++;
+            }
+        }
+
+        filteredLog.AppendLine($"#");
+        filteredLog.AppendLine($"# Total removed: {removedCount}");
+
+        try
+        {
+            File.WriteAllText(Path.Combine(NarcoNetDir, "FilterDiagnostic.txt"), filteredLog.ToString());
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning($"Failed to write filter diagnostic: {ex.Message}");
+        }
+
+        if (removedCount > 0)
+        {
+            Logger.LogInfo($"Filtered {removedCount} excluded files from remote file list");
+        }
+    }
+
+    /// <summary>
+    ///     Writes a diagnostic dump of mod files to a text file for debugging.
+    /// </summary>
+    private static void WriteDiagDump(string fileName, SyncPathModFiles modFiles, string header)
+    {
+        try
+        {
+            string path = Path.Combine(NarcoNetDir, fileName);
+            var sb = new StringBuilder();
+            sb.AppendLine($"# {header}");
+            sb.AppendLine($"# Generated: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC");
+            sb.AppendLine($"# Format: [SyncPath] | [FilePath] | [Hash] | [Type]");
+            sb.AppendLine($"# ─────────────────────────────────────────────────────────");
+
+            int total = 0;
+            foreach (var kvp in modFiles)
+            {
+                sb.AppendLine($"#");
+                sb.AppendLine($"# SyncPath: {kvp.Key} ({kvp.Value.Count} entries)");
+
+                foreach (var file in kvp.Value.OrderBy(f => f.Key, StringComparer.OrdinalIgnoreCase))
                 {
-                    Task.Run(() => SyncMods(_addedFiles, _updatedFiles, _createdDirectories));
-                }
-                else
-                {
-                    _uiService.ShowUpdateWindow(
-                        Optional,
-                        Required,
-                        () => Task.Run(() => SyncMods(_addedFiles, _updatedFiles, _createdDirectories)),
-                        Required.Count != 0 && Optional.Count == 0 ? null : SkipUpdatingMods
-                    );
+                    string type = file.Value.Directory ? "DIR" : "FILE";
+                    string hash = file.Value.Directory ? "--" : file.Value.Hash;
+                    sb.AppendLine($"{kvp.Key} | {file.Key} | {hash} | {type}");
+                    total++;
                 }
             }
-            else if (useIncrementalSync && UpdateCount == 0)
-            {
-                _syncService.WriteNarcoNetData(_remoteModFiles, _removedFiles, EnabledSyncPaths, _configService.DeleteRemovedFiles.Value);
-            }
+
+            sb.AppendLine($"#");
+            sb.AppendLine($"# Total: {total} entries");
+
+            File.WriteAllText(path, sb.ToString());
+            Logger.LogDebug($"Wrote diagnostic dump: {path} ({total} entries)");
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning($"Failed to write diagnostic dump {fileName}: {ex.Message}");
         }
     }
 

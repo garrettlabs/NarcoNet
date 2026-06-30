@@ -32,8 +32,7 @@ public static class Sync
     public static SyncPathFileList GetUpdatedFiles(
         List<SyncPath> syncPaths,
         SyncPathModFiles localModFiles,
-        SyncPathModFiles remoteModFiles,
-        SyncPathModFiles previousRemoteModFiles
+        SyncPathModFiles remoteModFiles
     )
     {
         return syncPaths
@@ -48,15 +47,6 @@ public static class Sync
                     .Where(kvp => !kvp.Value.Directory)
                     .Select(kvp => kvp.Key)
                     .Intersect(localPathFiles.Keys, StringComparer.OrdinalIgnoreCase);
-
-                if (!syncPath.Enabled)
-                {
-                    query = query.Where(file =>
-                        !previousRemoteModFiles.TryGetValue(syncPath.Path, out Dictionary<string, ModFile>? previousPathFiles)
-                        || !previousPathFiles.TryGetValue(file, out ModFile? modFile)
-                        || remoteModFiles[syncPath.Path][file].Hash != modFile.Hash
-                    );
-                }
 
                 query = query.Where(file =>
                 {
@@ -73,8 +63,7 @@ public static class Sync
     public static SyncPathFileList GetRemovedFiles(
         List<SyncPath> syncPaths,
         SyncPathModFiles localModFiles,
-        SyncPathModFiles remoteModFiles,
-        SyncPathModFiles previousRemoteModFiles
+        SyncPathModFiles remoteModFiles
     )
     {
         return syncPaths
@@ -85,22 +74,7 @@ public static class Sync
                     return new KeyValuePair<string, List<string>>(syncPath.Path, []);
                 }
 
-                IEnumerable<string> query;
-                if (syncPath.Enforced)
-                {
-                    // For ENFORCED paths, remove any local files that don't exist on the server
-                    query = localPathFiles.Keys.Except(remoteModFiles[syncPath.Path].Keys, StringComparer.OrdinalIgnoreCase);
-                }
-                else
-                {
-                    // For NON-ENFORCED paths, only remove files that the SERVER explicitly deleted
-                    // (files that existed in previous sync, still exist locally, but are gone from server)
-                    query = !previousRemoteModFiles.TryGetValue(syncPath.Path, out Dictionary<string, ModFile>? previousPathFiles)
-                        ? []
-                        : previousPathFiles
-                            .Keys.Intersect(localPathFiles.Keys, StringComparer.OrdinalIgnoreCase)
-                            .Except(remoteModFiles[syncPath.Path].Keys, StringComparer.OrdinalIgnoreCase);
-                }
+                IEnumerable<string> query = localPathFiles.Keys.Except(remoteModFiles[syncPath.Path].Keys, StringComparer.OrdinalIgnoreCase);
 
                 return new KeyValuePair<string, List<string>>(syncPath.Path, query.ToList());
             })
@@ -144,11 +118,11 @@ public static class Sync
 
         return Directory
             .GetFiles(directory, "*", SearchOption.TopDirectoryOnly)
-            .Where(file => !IsExcluded(exclusions, file.Replace($"{basePath}\\", "")))
+            .Where(file => !IsExcluded(exclusions, file.Replace($"{basePath}{Path.DirectorySeparatorChar}", "")))
             .Concat(
                 Directory
                     .GetDirectories(directory, "*", SearchOption.TopDirectoryOnly)
-                    .Where(subDir => !IsExcluded(exclusions, subDir.Replace($"{basePath}\\", "")))
+                    .Where(subDir => !IsExcluded(exclusions, subDir.Replace($"{basePath}{Path.DirectorySeparatorChar}", "")))
                     .SelectMany(subDir => Directory.GetFileSystemEntries(subDir).Length == 0
                         ? [subDir]
                         : GetFilesInDirectory(basePath, subDir, exclusions))
@@ -164,35 +138,42 @@ public static class Sync
     )
     {
         Stopwatch watch = Stopwatch.StartNew();
-        ConcurrentBag<string> processedFiles = new();
+        // Use ConcurrentDictionary with case-insensitive comparison (matching Windows FS behavior)
+        // to deduplicate files across overlapping sync paths. Keyed on normalized absolute paths
+        // to avoid mixed-slash mismatches from Path.Combine preserving forward slashes in config
+        // paths while Directory.GetDirectories uses backslashes for discovered subdirectories.
+        ConcurrentDictionary<string, byte> processedFiles = new(StringComparer.OrdinalIgnoreCase);
         SemaphoreSlim limitOpenFiles = new(1024);
 
         SyncPathModFiles results = new();
 
         foreach (SyncPath syncPath in syncPaths)
         {
-            string narcoNetDataPath = Path.Combine(basePath, "NarcoNet_Data");
-            string path = Path.GetFullPath(Path.Combine(narcoNetDataPath, syncPath.Path));
+            string path = Path.Combine(basePath, syncPath.Path);
 
             List<Regex> exclusionsToUse = [.. remoteExclusions, .. (syncPath.Enforced ? [] : localExclusions)];
             results[syncPath.Path] = (
                 await Task.WhenAll(
                     GetFilesInDirectory(basePath, path, exclusionsToUse)
-                        .Where(file => !processedFiles.Contains(file))
+                        .Where(file => processedFiles.TryAdd(
+                            file.Replace('/', Path.DirectorySeparatorChar), 0))
                         .AsParallel()
                         .Select(async file =>
                             {
                                 await limitOpenFiles.WaitAsync();
-                                ModFile modFile = await CreateModFile(file);
-                                limitOpenFiles.Release();
+                                try
+                                {
+                                    ModFile modFile = await CreateModFile(file);
 
-                                processedFiles.Add(file);
-                                // Convert absolute path back to relative path matching syncPath.Path format
-                                // Replace the game root path with empty string, then prepend ".."
-                                // e.g., C:\SPT\BepInEx\plugins\file.dll -> ..\\BepInEx\\plugins\\file.dll
-                                string pathFromGameRoot = file.Replace($"{basePath}\\", "");
-                                string relativePath = "..\\" + pathFromGameRoot;
-                                return new KeyValuePair<string, ModFile>(relativePath, modFile);
+                                    // Convert absolute path back to gameroot-relative path with forward slashes
+                                    string pathFromGameRoot = file.Replace($"{basePath}{Path.DirectorySeparatorChar}", "");
+                                    string relativePath = pathFromGameRoot.Replace(Path.DirectorySeparatorChar, '/');
+                                    return new KeyValuePair<string, ModFile>(relativePath, modFile);
+                                }
+                                finally
+                                {
+                                    limitOpenFiles.Release();
+                                }
                             }
                         )
                 )
@@ -217,7 +198,7 @@ public static class Sync
 
         try
         {
-            hash = await ImoHash.HashFile(file);
+            hash = await FileHash.HashFile(file);
         }
         catch (Exception e)
         {
@@ -233,7 +214,6 @@ public static class Sync
         List<SyncPath> syncPaths,
         SyncPathModFiles localModFiles,
         SyncPathModFiles remoteModFiles,
-        SyncPathModFiles previousSync,
         out SyncPathFileList addedFiles,
         out SyncPathFileList updatedFiles,
         out SyncPathFileList removedFiles,
@@ -241,8 +221,8 @@ public static class Sync
     )
     {
         addedFiles = GetAddedFiles(syncPaths, localModFiles, remoteModFiles);
-        updatedFiles = GetUpdatedFiles(syncPaths, localModFiles, remoteModFiles, previousSync);
-        removedFiles = GetRemovedFiles(syncPaths, localModFiles, remoteModFiles, previousSync);
+        updatedFiles = GetUpdatedFiles(syncPaths, localModFiles, remoteModFiles);
+        removedFiles = GetRemovedFiles(syncPaths, localModFiles, remoteModFiles);
         createdDirectories = GetCreatedDirectories(basePath, syncPaths, localModFiles, remoteModFiles);
     }
 

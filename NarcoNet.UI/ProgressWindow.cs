@@ -9,6 +9,7 @@ public class ProgressWindow(string title, string message)
     private readonly CancelButton _cancelButton = new();
     private readonly InfoBox _infoBox = new(title, message);
     private readonly ProgressBar _progressBar = new();
+    private readonly ByteProgressBar _byteProgressBar = new();
     public bool Active { get; private set; }
 
     public void Show()
@@ -21,7 +22,7 @@ public class ProgressWindow(string title, string message)
         Active = false;
     }
 
-    public void Draw(int progressValue, int progressMax, Action? cancelAction)
+    public void Draw(int progressValue, int progressMax, long bytesDownloaded, long bytesTotal, Action? cancelAction)
     {
         float screenWidth = Screen.width;
         float screenHeight = Screen.height;
@@ -48,6 +49,17 @@ public class ProgressWindow(string title, string message)
         GUILayout.FlexibleSpace();
         GUILayout.EndHorizontal();
 
+        if (bytesTotal > 0)
+        {
+            GUILayout.Space(16f);
+
+            GUILayout.BeginHorizontal();
+            GUILayout.FlexibleSpace();
+            _byteProgressBar.Draw(new Vector2(windowWidth, 24f), bytesDownloaded, bytesTotal);
+            GUILayout.FlexibleSpace();
+            GUILayout.EndHorizontal();
+        }
+
         GUILayout.Space(64f);
 
         GUILayout.BeginHorizontal();
@@ -66,6 +78,17 @@ public class ProgressWindow(string title, string message)
         GUILayout.FlexibleSpace();
         GUILayout.EndVertical();
         GUILayout.EndArea();
+    }
+
+    internal static string FormatBytes(long bytes)
+    {
+        return bytes switch
+        {
+            >= 1_073_741_824L => $"{bytes / 1_073_741_824.0:F1} GB",
+            >= 1_048_576L => $"{bytes / 1_048_576.0:F1} MB",
+            >= 1_024L => $"{bytes / 1_024.0:F1} KB",
+            _ => $"{bytes} B"
+        };
     }
 
     private class ProgressBar : Bordered
@@ -95,7 +118,7 @@ public class ProgressWindow(string title, string message)
             // Draw dark background with gradient
             DrawRoundedBox(progressRect, Colors.Dark.SetAlpha(0.5f), CornerRadius - BorderThickness);
 
-            float targetRatio = (float)currentValue / maxValue;
+            float targetRatio = maxValue > 0 ? (float)currentValue / maxValue : 0f;
             // Smooth animation
             _animatedProgress = Mathf.Lerp(_animatedProgress, targetRatio, Time.deltaTime * 5f);
 
@@ -130,9 +153,74 @@ public class ProgressWindow(string title, string message)
                 normal = { textColor = Colors.Dark }
             };
 
+            string progressText = maxValue > 0
+                ? $"{currentValue} / {maxValue} ({(float)currentValue / maxValue:P1})"
+                : $"{currentValue} / {maxValue}";
             Rect shadowRect = new(progressRect.x + 1, progressRect.y + 1, progressRect.width, progressRect.height);
-            GUI.Label(shadowRect, $"{currentValue} / {maxValue} ({(float)currentValue / maxValue:P1})", shadowStyle);
-            GUI.Label(progressRect, $"{currentValue} / {maxValue} ({(float)currentValue / maxValue:P1})", style);
+            GUI.Label(shadowRect, progressText, shadowStyle);
+            GUI.Label(progressRect, progressText, style);
+        }
+    }
+
+    private class ByteProgressBar : Bordered
+    {
+        private const int BorderThickness = 1;
+        private const int CornerRadius = 4;
+        private float _animatedProgress;
+
+        public void Draw(Vector2 size, long currentBytes, long totalBytes)
+        {
+            Rect borderRect = GUILayoutUtility.GetRect(size.x, size.y);
+
+            // Draw rounded border
+            DrawBorder(borderRect, BorderThickness, Colors.PrimaryLight.SetAlpha(0.6f), CornerRadius);
+
+            Rect progressRect =
+                new(
+                    borderRect.x + BorderThickness,
+                    borderRect.y + BorderThickness,
+                    borderRect.width - 2 * BorderThickness,
+                    borderRect.height - 2 * BorderThickness
+                );
+
+            // Draw dark background
+            DrawRoundedBox(progressRect, Colors.Dark.SetAlpha(0.4f), CornerRadius - BorderThickness);
+
+            float targetRatio = totalBytes > 0 ? (float)currentBytes / totalBytes : 0f;
+            _animatedProgress = Mathf.Lerp(_animatedProgress, targetRatio, Time.deltaTime * 5f);
+
+            if (_animatedProgress > 0.01f)
+            {
+                Rect fillRect = new(progressRect.x, progressRect.y, progressRect.width * _animatedProgress,
+                    progressRect.height);
+
+                DrawGradientBox(fillRect, Colors.Primary.SetAlpha(0.7f), Colors.PrimaryLight.SetAlpha(0.7f), true,
+                    CornerRadius - BorderThickness);
+            }
+
+            // Text
+            GUIStyle style = new()
+            {
+                alignment = TextAnchor.MiddleCenter,
+                fontSize = 12,
+                fontStyle = FontStyle.Normal,
+                normal = { textColor = Colors.White }
+            };
+
+            GUIStyle shadowStyle = new()
+            {
+                alignment = TextAnchor.MiddleCenter,
+                fontSize = 12,
+                fontStyle = FontStyle.Normal,
+                normal = { textColor = Colors.Dark }
+            };
+
+            string progressText = totalBytes > 0
+                ? $"{FormatBytes(currentBytes)} / {FormatBytes(totalBytes)} ({targetRatio:P1})"
+                : "";
+            Rect shadowRect = new(progressRect.x + 1, progressRect.y + 1, progressRect.width, progressRect.height);
+            GUI.Label(shadowRect, progressText, shadowStyle);
+            GUI.Label(progressRect, progressText, style);
         }
     }
 }

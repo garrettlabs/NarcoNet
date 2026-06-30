@@ -7,6 +7,7 @@
 *.dll
 
 # User-specific files
+mise.local.toml
 *.rsuser
 *.suo
 *.user
@@ -20,6 +21,7 @@
 mono_crash.*
 
 # Build results
+dist/
 [Dd]ebug/
 [Dd]ebugPublic/
 [Rr]elease/
@@ -367,3 +369,6 @@ MigrationBackup/
 FodyWeavers.xsd
 
 **/[Bb]uild/
+
+# Game references packaging (DLLs copied by pack.sh)
+GameReferences/tools/

@@ -1,6 +1,7 @@
+using System.Text.RegularExpressions;
+
 using NarcoNet.Utilities;
 using SPT.Common.Utils;
-using System.Text.RegularExpressions;
 
 namespace NarcoNet.Services;
 
@@ -16,9 +17,14 @@ public class ClientInitializationService : IClientInitializationService
     {
         foreach (SyncPath syncPath in syncPaths)
         {
-            if (Path.IsPathRooted(syncPath.Path) || Regex.IsMatch(syncPath.Path, @"^[a-zA-Z]:[\\/]"))
+            if (Path.IsPathRooted(syncPath.Path))
             {
-                return $"Paths must be relative to SPT server root! Invalid path '{syncPath}'";
+                return $"Paths must be relative to the game root! Invalid path '{syncPath}'";
+            }
+
+            if (syncPath.Path.Contains(".."))
+            {
+                return $"Paths must not contain '..'. Invalid path '{syncPath.Path}'. All paths should be relative to the game root folder.";
             }
 
             // Get the full resolved path
@@ -40,33 +46,51 @@ public class ClientInitializationService : IClientInitializationService
     }
 
     /// <inheritdoc/>
-    public SyncPathModFiles LoadPreviousSync(string previousSyncPath)
+    public List<string> LoadLocalExclusions(string localExclusionsPath, bool isHeadless, List<string>? headlessExclusionTemplates)
     {
-        if (!VFS.Exists(previousSyncPath))
+        if (!File.Exists(localExclusionsPath))
         {
+            // Auto-create a template file for headless clients so users have a starting point to edit
+            if (isHeadless && headlessExclusionTemplates != null)
+            {
+                string? parentDir = Path.GetDirectoryName(localExclusionsPath);
+                if (!string.IsNullOrEmpty(parentDir))
+                {
+                    Directory.CreateDirectory(parentDir);
+                }
+
+                File.WriteAllText(localExclusionsPath, Json.Serialize(headlessExclusionTemplates));
+                NarcoPlugin.Logger.LogInfo(
+                    $"Created default exclusions file at '{localExclusionsPath}'. Edit this file to customize which files are excluded from sync.");
+                return headlessExclusionTemplates;
+            }
+
             return [];
         }
 
-        string json = VFS.ReadTextFile(previousSyncPath);
-        return Json.Deserialize<SyncPathModFiles>(json);
-    }
+        string json = File.ReadAllText(localExclusionsPath);
+        List<string> exclusions = Json.Deserialize<List<string>>(json);
 
-    /// <inheritdoc/>
-    public List<string> LoadLocalExclusions(string localExclusionsPath, bool isHeadless, List<string>? defaultExclusions)
-    {
-        // Create defaults for headless if file doesn't exist
-        if (isHeadless && !VFS.Exists(localExclusionsPath) && defaultExclusions != null)
+        // Migrate old-format paths (with ../ prefix) to gameroot-relative paths
+        bool migrated = false;
+        for (int i = 0; i < exclusions.Count; i++)
         {
-            VFS.WriteTextFile(localExclusionsPath, Json.Serialize(defaultExclusions));
+            string original = exclusions[i];
+            if (original.StartsWith("../") || original.StartsWith(@"..\"))
+            {
+                exclusions[i] = original.Substring(3);
+                migrated = true;
+            }
         }
 
-        if (!VFS.Exists(localExclusionsPath))
+        if (migrated)
         {
-            return [];
+            NarcoPlugin.Logger.LogWarning(
+                $"Exclusions.json uses deprecated '../' path format. Paths have been automatically migrated to gameroot-relative format. The file has been updated.");
+            File.WriteAllText(localExclusionsPath, Json.Serialize(exclusions));
         }
 
-        string json = VFS.ReadTextFile(localExclusionsPath);
-        return Json.Deserialize<List<string>>(json);
+        return exclusions;
     }
 
     /// <inheritdoc/>

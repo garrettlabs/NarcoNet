@@ -27,6 +27,11 @@
     </PropertyGroup>
 
     <ItemGroup>
+        <PackageReference Remove="NarcoNet.GameReferences" />
+        <PackageReference Remove="Microsoft.NETFramework.ReferenceAssemblies.net472" />
+    </ItemGroup>
+
+    <ItemGroup>
         <PackageReference Include="SPTarkov.Common" Version="4.0.3">
             <PrivateAssets>all</PrivateAssets>
             <ExcludeAssets>runtime</ExcludeAssets>
@@ -50,6 +55,10 @@
         <PackageReference Include="YamlDotNet" Version="16.2.1">
             <PrivateAssets>none</PrivateAssets>
         </PackageReference>
+    </ItemGroup>
+
+    <ItemGroup>
+        <InternalsVisibleTo Include="NarcoNet.Tests" />
     </ItemGroup>
 
     <ItemGroup>

@@ -27,6 +27,7 @@ public class NarcoPlugin : BaseUnityPlugin, IDisposable
     private static readonly string NarcoNetDir = Path.Combine(Directory.GetCurrentDirectory(), NarcoNetConstants.DataDirectoryName);
     private static readonly string PendingUpdatesDir = Path.Combine(NarcoNetDir, NarcoNetConstants.PendingUpdatesDirectoryName);
     private static readonly string LocalHashesPath = Path.Combine(NarcoNetDir, "LocalHashes.json");
+    private static readonly string PreviousServerHashesPath = Path.Combine(NarcoNetDir, "PreviousServerHashes.json");
     private static readonly string LocalExclusionsPath = Path.Combine(NarcoNetDir, "Exclusions.json");
     public new static readonly ManualLogSource Logger = BepInEx.Logging.Logger.CreateLogSource(NarcoNetConstants.ProductName);
 
@@ -35,6 +36,7 @@ public class NarcoPlugin : BaseUnityPlugin, IDisposable
     private readonly IClientConfigService _configService;
     private readonly IClientSyncService _syncService;
     private readonly IClientInitializationService _initService;
+    private readonly PreviousServerHashManifestStore _previousServerHashManifestStore;
     private readonly ServerModule _server;
 
     // State
@@ -62,6 +64,7 @@ public class NarcoPlugin : BaseUnityPlugin, IDisposable
         _configService = new ClientConfigService();
         _syncService = new ClientSyncService(Logger, _server);
         _initService = new ClientInitializationService();
+        _previousServerHashManifestStore = new PreviousServerHashManifestStore(Logger);
     }
 
     private int UpdateCount =>
@@ -216,11 +219,12 @@ public class NarcoPlugin : BaseUnityPlugin, IDisposable
     /// <summary>
     ///     Analyzes differences between local and remote files, then shows update UI or silently syncs
     /// </summary>
-    private void AnalyzeModFiles(SyncPathModFiles localModFiles)
+    private void AnalyzeModFiles(SyncPathModFiles localModFiles, SyncPathModFiles? previousServerModFiles)
     {
         _syncService.AnalyzeModFiles(
             localModFiles,
             _remoteModFiles,
+            previousServerModFiles,
             EnabledSyncPaths,
             out _addedFiles,
             out _updatedFiles,
@@ -228,7 +232,13 @@ public class NarcoPlugin : BaseUnityPlugin, IDisposable
             out _createdDirectories
         );
 
-        if (UpdateCount <= 0) return;
+        if (UpdateCount <= 0)
+        {
+            // No updates means the filtered current server set is already applied locally; refreshing the
+            // baseline keeps first-run/no-op launches from repeatedly falling back to legacy comparison.
+            SavePreviousServerHashManifest();
+            return;
+        }
         if (SilentMode)
         {
             Task.Run(() => SyncMods(_addedFiles, _updatedFiles, _createdDirectories, _removedFiles));
@@ -331,6 +341,7 @@ public class NarcoPlugin : BaseUnityPlugin, IDisposable
                     {
                         Directory.Delete(PendingUpdatesDir, true);
                     }
+                    SavePreviousServerHashManifest();
                     _pluginFinished = true;
                 }
                 else
@@ -475,6 +486,7 @@ public class NarcoPlugin : BaseUnityPlugin, IDisposable
             if (Directory.Exists(PendingUpdatesDir))
                 Directory.Delete(PendingUpdatesDir, true);
 
+            SavePreviousServerHashManifest();
             Logger.LogInfo("Restart-required updates applied successfully. Exiting for restart.");
         }
         catch (Exception ex)
@@ -803,11 +815,14 @@ public class NarcoPlugin : BaseUnityPlugin, IDisposable
                 yield break;
             }
 
+            Logger.LogDebug("Loading previous server hash manifest...");
+            SyncPathModFiles? previousServerModFiles = _previousServerHashManifestStore.Load(PreviousServerHashesPath);
+
             Logger.LogDebug("Comparing local and remote files...");
             _uiService.UpdateDiagnosticStep("compare", "Comparing files...", DiagnosticState.InProgress);
             try
             {
-                AnalyzeModFiles(localModFiles);
+                AnalyzeModFiles(localModFiles, previousServerModFiles);
 
                 int added = _addedFiles.Sum(kvp => kvp.Value.Count);
                 int updated = _updatedFiles.Sum(kvp => kvp.Value.Count);
@@ -835,6 +850,21 @@ public class NarcoPlugin : BaseUnityPlugin, IDisposable
                     $"Could not load {Info.Metadata.Name} due to error analyzing mod files: {e.Message}"
                 );
             }
+        }
+    }
+
+    /// <summary>
+    ///     Persists the full current filtered server hash baseline after a successful sync/apply path.
+    /// </summary>
+    private void SavePreviousServerHashManifest()
+    {
+        try
+        {
+            _previousServerHashManifestStore.Save(PreviousServerHashesPath, _remoteModFiles);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError($"Could not persist previous server hash manifest after successful sync: {ex.GetType().Name}: {ex.Message}");
         }
     }
 

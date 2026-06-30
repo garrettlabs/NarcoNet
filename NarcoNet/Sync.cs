@@ -32,27 +32,43 @@ public static class Sync
     public static SyncPathFileList GetUpdatedFiles(
         List<SyncPath> syncPaths,
         SyncPathModFiles localModFiles,
-        SyncPathModFiles remoteModFiles
+        SyncPathModFiles remoteModFiles,
+        SyncPathModFiles? previousServerModFiles = null
     )
     {
         return syncPaths
             .Select(syncPath =>
             {
-                if (!localModFiles.TryGetValue(syncPath.Path, out Dictionary<string, ModFile>? localPathFiles))
+                if (!TryGetPathFiles(localModFiles, syncPath.Path, out Dictionary<string, ModFile>? localPathFiles))
                 {
                     return new KeyValuePair<string, List<string>>(syncPath.Path, []);
                 }
 
-                IEnumerable<string> query = remoteModFiles[syncPath.Path]
+                Dictionary<string, ModFile> remotePathFiles = GetRequiredPathFiles(remoteModFiles, syncPath.Path);
+                Dictionary<string, ModFile>? previousPathFiles = previousServerModFiles != null
+                    && TryGetPathFiles(previousServerModFiles, syncPath.Path, out Dictionary<string, ModFile>? matchedPreviousPathFiles)
+                        ? matchedPreviousPathFiles
+                        : null;
+
+                IEnumerable<string> query = remotePathFiles
                     .Where(kvp => !kvp.Value.Directory)
                     .Select(kvp => kvp.Key)
-                    .Intersect(localPathFiles.Keys, StringComparer.OrdinalIgnoreCase);
+                    .Where(file => TryGetFile(localPathFiles, file, out ModFile _));
 
                 query = query.Where(file =>
                 {
-                    // Find the actual key in localPathFiles (case-insensitive)
-                    string? localKey = localPathFiles.Keys.FirstOrDefault(k => string.Equals(k, file, StringComparison.OrdinalIgnoreCase));
-                    return localKey == null || remoteModFiles[syncPath.Path][file].Hash != localPathFiles[localKey].Hash;
+                    ModFile remoteFile = remotePathFiles[file];
+                    if (!TryGetFile(localPathFiles, file, out ModFile localFile))
+                    {
+                        return false;
+                    }
+
+                    if (syncPath.Enforced || previousPathFiles == null || !TryGetFile(previousPathFiles, file, out ModFile previousServerFile))
+                    {
+                        return remoteFile.Hash != localFile.Hash;
+                    }
+
+                    return previousServerFile.Hash != remoteFile.Hash && remoteFile.Hash != localFile.Hash;
                 });
 
                 return new KeyValuePair<string, List<string>>(syncPath.Path, query.ToList());
@@ -60,21 +76,84 @@ public static class Sync
             .ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
     }
 
+    private static Dictionary<string, ModFile> GetRequiredPathFiles(SyncPathModFiles modFiles, string syncPath)
+    {
+        return TryGetPathFiles(modFiles, syncPath, out Dictionary<string, ModFile>? pathFiles)
+            ? pathFiles
+            : modFiles[syncPath];
+    }
+
+    private static bool TryGetPathFiles(
+        SyncPathModFiles modFiles,
+        string syncPath,
+        out Dictionary<string, ModFile>? pathFiles
+    )
+    {
+        if (modFiles.TryGetValue(syncPath, out pathFiles))
+        {
+            return true;
+        }
+
+        string? matchedPathKey = modFiles.Keys.FirstOrDefault(key => string.Equals(key, syncPath, StringComparison.OrdinalIgnoreCase));
+        if (matchedPathKey == null)
+        {
+            pathFiles = null;
+            return false;
+        }
+
+        pathFiles = modFiles[matchedPathKey];
+        return true;
+    }
+
+    private static bool TryGetFile(
+        Dictionary<string, ModFile> pathFiles,
+        string file,
+        out ModFile modFile
+    )
+    {
+        if (pathFiles.TryGetValue(file, out modFile!))
+        {
+            return true;
+        }
+
+        string? matchedFileKey = pathFiles.Keys.FirstOrDefault(key => string.Equals(key, file, StringComparison.OrdinalIgnoreCase));
+        if (matchedFileKey == null)
+        {
+            modFile = null!;
+            return false;
+        }
+
+        modFile = pathFiles[matchedFileKey];
+        return true;
+    }
+
     public static SyncPathFileList GetRemovedFiles(
         List<SyncPath> syncPaths,
         SyncPathModFiles localModFiles,
-        SyncPathModFiles remoteModFiles
+        SyncPathModFiles remoteModFiles,
+        SyncPathModFiles? previousServerModFiles = null
     )
     {
         return syncPaths
             .Select(syncPath =>
             {
-                if (!localModFiles.TryGetValue(syncPath.Path, out Dictionary<string, ModFile>? localPathFiles))
+                if (!TryGetPathFiles(localModFiles, syncPath.Path, out Dictionary<string, ModFile>? localPathFiles))
                 {
                     return new KeyValuePair<string, List<string>>(syncPath.Path, []);
                 }
 
-                IEnumerable<string> query = localPathFiles.Keys.Except(remoteModFiles[syncPath.Path].Keys, StringComparer.OrdinalIgnoreCase);
+                Dictionary<string, ModFile> remotePathFiles = GetRequiredPathFiles(remoteModFiles, syncPath.Path);
+                Dictionary<string, ModFile>? previousPathFiles = previousServerModFiles != null
+                    && TryGetPathFiles(previousServerModFiles, syncPath.Path, out Dictionary<string, ModFile>? matchedPreviousPathFiles)
+                        ? matchedPreviousPathFiles
+                        : null;
+
+                IEnumerable<string> query = localPathFiles.Keys.Except(remotePathFiles.Keys, StringComparer.OrdinalIgnoreCase);
+
+                if (previousServerModFiles != null)
+                {
+                    query = query.Where(file => previousPathFiles != null && TryGetFile(previousPathFiles, file, out ModFile _));
+                }
 
                 return new KeyValuePair<string, List<string>>(syncPath.Path, query.ToList());
             })
@@ -220,9 +299,34 @@ public static class Sync
         out SyncPathFileList createdDirectories
     )
     {
+        CompareModFiles(
+            basePath,
+            syncPaths,
+            localModFiles,
+            remoteModFiles,
+            previousServerModFiles: null,
+            out addedFiles,
+            out updatedFiles,
+            out removedFiles,
+            out createdDirectories
+        );
+    }
+
+    public static void CompareModFiles(
+        string basePath,
+        List<SyncPath> syncPaths,
+        SyncPathModFiles localModFiles,
+        SyncPathModFiles remoteModFiles,
+        SyncPathModFiles? previousServerModFiles,
+        out SyncPathFileList addedFiles,
+        out SyncPathFileList updatedFiles,
+        out SyncPathFileList removedFiles,
+        out SyncPathFileList createdDirectories
+    )
+    {
         addedFiles = GetAddedFiles(syncPaths, localModFiles, remoteModFiles);
-        updatedFiles = GetUpdatedFiles(syncPaths, localModFiles, remoteModFiles);
-        removedFiles = GetRemovedFiles(syncPaths, localModFiles, remoteModFiles);
+        updatedFiles = GetUpdatedFiles(syncPaths, localModFiles, remoteModFiles, previousServerModFiles);
+        removedFiles = GetRemovedFiles(syncPaths, localModFiles, remoteModFiles, previousServerModFiles);
         createdDirectories = GetCreatedDirectories(basePath, syncPaths, localModFiles, remoteModFiles);
     }
 

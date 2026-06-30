@@ -1,5 +1,7 @@
+using BepInEx.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
+using NarcoNet.Services;
 using NarcoNet.Server.Models;
 using NarcoNet.Server.Services;
 using NarcoNet.Server.Utilities;
@@ -8,6 +10,8 @@ using NarcoNet.Utilities;
 using Xunit.Abstractions;
 
 namespace NarcoNet.Tests.Integration;
+
+using SyncPathModFiles = Dictionary<string, Dictionary<string, ModFile>>;
 
 /// <summary>
 /// Tests for sync path filtering logic
@@ -157,6 +161,202 @@ public class SyncPathFilteringTests(ITestOutputHelper testOutputHelper)
         Assert.DoesNotContain(filtered, sp => sp.Path == "SPT/user/mods");
 
         testOutputHelper.WriteLine("\n✓ TEST PASSED.: Real world scenario works correctly\n");
+    }
+
+    [Fact]
+    public void PreviousServerHashManifest_LoadCompareWriteReload_PreservesLocalEditsAndAppliesServerChanges()
+    {
+        testOutputHelper.WriteLine("=== TEST: Previous server manifest lifecycle preserves local edits ===\n");
+
+        string tempDir = Path.Combine(Path.GetTempPath(), "narconet-manifest-lifecycle-" + Guid.NewGuid().ToString("N"));
+        string manifestPath = Path.Combine(tempDir, "NarcoNet", "PreviousServerHashes.json");
+        Directory.CreateDirectory(tempDir);
+
+        const string syncPath = "BepInEx/plugins";
+        const string locallyEditedUnchangedServerFile = "BepInEx/plugins/local-edit-preserved.dll";
+        const string serverBumpedFile = "BepInEx/plugins/server-bumped.dll";
+        const string serverDeletedTrackedFile = "BepInEx/plugins/server-deleted.dll";
+        const string userCreatedFile = "BepInEx/plugins/user-created.dll";
+
+        var syncPaths = new List<SyncPath>
+        {
+            new(syncPath, "Plugins", Enabled: true, Enforced: false, Silent: false, RestartRequired: true)
+        };
+        var manifestStore = new PreviousServerHashManifestStore(new ManualLogSource("ManifestLifecycleTest"));
+        var syncService = new ClientSyncService(
+            new ManualLogSource("ManifestLifecycleSyncTest"),
+            new ServerModule(new Version("1.0.0"))
+        );
+
+        try
+        {
+            SyncPathModFiles firstRunLocalFiles = new()
+            {
+                [syncPath] = new Dictionary<string, ModFile>
+                {
+                    [locallyEditedUnchangedServerFile] = new("local-edited-before-baseline", false),
+                    [serverBumpedFile] = new("server-old-hash", false),
+                    [serverDeletedTrackedFile] = new("server-deleted-old-hash", false),
+                    [userCreatedFile] = new("user-created-hash", false)
+                }
+            };
+            SyncPathModFiles firstRunServerFiles = new()
+            {
+                [syncPath] = new Dictionary<string, ModFile>
+                {
+                    [locallyEditedUnchangedServerFile] = new("server-original-hash", false),
+                    [serverBumpedFile] = new("server-old-hash", false),
+                    [serverDeletedTrackedFile] = new("server-deleted-old-hash", false)
+                }
+            };
+
+            SyncPathModFiles? missingManifest = manifestStore.Load(manifestPath);
+            Assert.Null(missingManifest);
+
+            syncService.AnalyzeModFiles(
+                firstRunLocalFiles,
+                firstRunServerFiles,
+                missingManifest,
+                syncPaths,
+                out var firstRunAddedFiles,
+                out var firstRunUpdatedFiles,
+                out var firstRunRemovedFiles,
+                out var firstRunCreatedDirectories
+            );
+
+            Assert.Empty(firstRunAddedFiles[syncPath]);
+            Assert.Single(firstRunUpdatedFiles[syncPath]);
+            Assert.Contains(locallyEditedUnchangedServerFile, firstRunUpdatedFiles[syncPath]);
+            Assert.Single(firstRunRemovedFiles[syncPath]);
+            Assert.Contains(userCreatedFile, firstRunRemovedFiles[syncPath]);
+            Assert.Empty(firstRunCreatedDirectories[syncPath]);
+
+            manifestStore.Save(manifestPath, firstRunServerFiles);
+            Assert.True(File.Exists(manifestPath));
+
+            SyncPathModFiles? reloadedManifest = manifestStore.Load(manifestPath);
+            Assert.NotNull(reloadedManifest);
+            Assert.True(reloadedManifest.ContainsKey(syncPath));
+            Assert.Equal(3, reloadedManifest[syncPath].Count);
+            Assert.Equal("server-original-hash", reloadedManifest[syncPath][locallyEditedUnchangedServerFile].Hash);
+            Assert.Equal("server-old-hash", reloadedManifest[syncPath][serverBumpedFile].Hash);
+            Assert.Equal("server-deleted-old-hash", reloadedManifest[syncPath][serverDeletedTrackedFile].Hash);
+
+            SyncPathModFiles secondRunLocalFiles = new()
+            {
+                [syncPath] = new Dictionary<string, ModFile>
+                {
+                    [locallyEditedUnchangedServerFile] = new("local-edit-after-relaunch", false),
+                    [serverBumpedFile] = new("server-old-hash", false),
+                    [serverDeletedTrackedFile] = new("server-deleted-old-hash", false),
+                    [userCreatedFile] = new("user-created-hash", false)
+                }
+            };
+            SyncPathModFiles secondRunServerFiles = new()
+            {
+                [syncPath] = new Dictionary<string, ModFile>
+                {
+                    [locallyEditedUnchangedServerFile] = new("server-original-hash", false),
+                    [serverBumpedFile] = new("server-new-hash", false)
+                }
+            };
+
+            syncService.AnalyzeModFiles(
+                secondRunLocalFiles,
+                secondRunServerFiles,
+                reloadedManifest,
+                syncPaths,
+                out var secondRunAddedFiles,
+                out var secondRunUpdatedFiles,
+                out var secondRunRemovedFiles,
+                out var secondRunCreatedDirectories
+            );
+
+            Assert.Empty(secondRunAddedFiles[syncPath]);
+            Assert.Single(secondRunUpdatedFiles[syncPath]);
+            Assert.Contains(serverBumpedFile, secondRunUpdatedFiles[syncPath]);
+            Assert.DoesNotContain(locallyEditedUnchangedServerFile, secondRunUpdatedFiles[syncPath]);
+            Assert.Single(secondRunRemovedFiles[syncPath]);
+            Assert.Contains(serverDeletedTrackedFile, secondRunRemovedFiles[syncPath]);
+            Assert.DoesNotContain(userCreatedFile, secondRunRemovedFiles[syncPath]);
+            Assert.Empty(secondRunCreatedDirectories[syncPath]);
+        }
+        finally
+        {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void PreviousServerHashManifest_CorruptInputFallsBackAndSuccessfulWriteReplacesIt()
+    {
+        testOutputHelper.WriteLine("=== TEST: Corrupt previous server manifest falls back then rewrites ===\n");
+
+        string tempDir = Path.Combine(Path.GetTempPath(), "narconet-manifest-corrupt-" + Guid.NewGuid().ToString("N"));
+        string manifestPath = Path.Combine(tempDir, "PreviousServerHashes.json");
+        Directory.CreateDirectory(tempDir);
+        File.WriteAllText(manifestPath, "{ not valid json");
+
+        const string syncPath = "BepInEx/plugins";
+        const string locallyEditedUnchangedServerFile = "BepInEx/plugins/local-edit-preserved.dll";
+        var syncPaths = new List<SyncPath>
+        {
+            new(syncPath, "Plugins", Enabled: true, Enforced: false, Silent: false, RestartRequired: true)
+        };
+        var manifestStore = new PreviousServerHashManifestStore(new ManualLogSource("CorruptManifestTest"));
+        var syncService = new ClientSyncService(
+            new ManualLogSource("CorruptManifestSyncTest"),
+            new ServerModule(new Version("1.0.0"))
+        );
+
+        try
+        {
+            SyncPathModFiles? corruptManifest = manifestStore.Load(manifestPath);
+            Assert.Null(corruptManifest);
+
+            SyncPathModFiles localFiles = new()
+            {
+                [syncPath] = new Dictionary<string, ModFile>
+                {
+                    [locallyEditedUnchangedServerFile] = new("local-edited-hash", false)
+                }
+            };
+            SyncPathModFiles serverFiles = new()
+            {
+                [syncPath] = new Dictionary<string, ModFile>
+                {
+                    [locallyEditedUnchangedServerFile] = new("server-original-hash", false)
+                }
+            };
+
+            syncService.AnalyzeModFiles(
+                localFiles,
+                serverFiles,
+                corruptManifest,
+                syncPaths,
+                out var addedFiles,
+                out var updatedFiles,
+                out var removedFiles,
+                out var createdDirectories
+            );
+
+            Assert.Empty(addedFiles[syncPath]);
+            Assert.Single(updatedFiles[syncPath]);
+            Assert.Contains(locallyEditedUnchangedServerFile, updatedFiles[syncPath]);
+            Assert.Empty(removedFiles[syncPath]);
+            Assert.Empty(createdDirectories[syncPath]);
+
+            manifestStore.Save(manifestPath, serverFiles);
+            SyncPathModFiles? reloadedManifest = manifestStore.Load(manifestPath);
+
+            Assert.NotNull(reloadedManifest);
+            Assert.True(reloadedManifest.ContainsKey(syncPath));
+            Assert.Equal("server-original-hash", reloadedManifest[syncPath][locallyEditedUnchangedServerFile].Hash);
+        }
+        finally
+        {
+            Directory.Delete(tempDir, recursive: true);
+        }
     }
 
     [Fact]

@@ -23,6 +23,19 @@ public interface IClientSyncService
         out SyncPathFileList createdDirectories);
 
     /// <summary>
+    ///     Analyzes differences between local and remote mod files using the previous successful server hashes as a baseline
+    /// </summary>
+    void AnalyzeModFiles(
+        SyncPathModFiles localModFiles,
+        SyncPathModFiles remoteModFiles,
+        SyncPathModFiles? previousServerModFiles,
+        List<SyncPath> enabledSyncPaths,
+        out SyncPathFileList addedFiles,
+        out SyncPathFileList updatedFiles,
+        out SyncPathFileList removedFiles,
+        out SyncPathFileList createdDirectories);
+
+    /// <summary>
     ///     Downloads and synchronizes modified files
     /// </summary>
     Task SyncModsAsync(

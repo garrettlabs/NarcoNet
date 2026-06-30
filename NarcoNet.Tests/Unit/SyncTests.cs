@@ -79,6 +79,291 @@ public class SyncTests
     }
 
     [Fact]
+    public void GetUpdatedFiles_WithUnchangedPreviousServerHash_Should_PreserveLocalEdit()
+    {
+        // Arrange
+        const string syncPath = "BepInEx/plugins";
+        const string file = "BepInEx/plugins/local-edit.dll";
+        var syncPaths = new List<SyncPath>
+        {
+            new(Path: syncPath, Name: "Plugins", Enabled: true, Enforced: false)
+        };
+
+        var localModFiles = new SyncPathModFiles
+        {
+            [syncPath] = new Dictionary<string, ModFile>
+            {
+                [file] = new ModFile("local-edited-hash", Directory: false)
+            }
+        };
+
+        var remoteModFiles = new SyncPathModFiles
+        {
+            [syncPath] = new Dictionary<string, ModFile>
+            {
+                [file] = new ModFile("server-original-hash", Directory: false)
+            }
+        };
+
+        var previousServerModFiles = new SyncPathModFiles
+        {
+            [syncPath] = new Dictionary<string, ModFile>
+            {
+                [file] = new ModFile("server-original-hash", Directory: false)
+            }
+        };
+
+        // Act
+        var updatedFiles = Sync.GetUpdatedFiles(syncPaths, localModFiles, remoteModFiles, previousServerModFiles);
+
+        // Assert
+        Assert.Empty(updatedFiles[syncPath]);
+    }
+
+    [Fact]
+    public void GetUpdatedFiles_WithChangedPreviousServerHash_Should_UpdateLocalEdit()
+    {
+        // Arrange
+        const string syncPath = "BepInEx/plugins";
+        const string file = "BepInEx/plugins/local-edit.dll";
+        var syncPaths = new List<SyncPath>
+        {
+            new(Path: syncPath, Name: "Plugins", Enabled: true, Enforced: false)
+        };
+
+        var localModFiles = new SyncPathModFiles
+        {
+            [syncPath] = new Dictionary<string, ModFile>
+            {
+                [file] = new ModFile("local-edited-hash", Directory: false)
+            }
+        };
+
+        var remoteModFiles = new SyncPathModFiles
+        {
+            [syncPath] = new Dictionary<string, ModFile>
+            {
+                [file] = new ModFile("server-updated-hash", Directory: false)
+            }
+        };
+
+        var previousServerModFiles = new SyncPathModFiles
+        {
+            [syncPath] = new Dictionary<string, ModFile>
+            {
+                [file] = new ModFile("server-original-hash", Directory: false)
+            }
+        };
+
+        // Act
+        var updatedFiles = Sync.GetUpdatedFiles(syncPaths, localModFiles, remoteModFiles, previousServerModFiles);
+
+        // Assert
+        Assert.Single(updatedFiles[syncPath]);
+        Assert.Contains(file, updatedFiles[syncPath]);
+    }
+
+    [Fact]
+    public void GetUpdatedFiles_WithMissingPreviousEntry_Should_FallBackToTwoWayUpdate()
+    {
+        // Arrange
+        const string syncPath = "BepInEx/plugins";
+        const string file = "BepInEx/plugins/missing-previous.dll";
+        var syncPaths = new List<SyncPath>
+        {
+            new(Path: syncPath, Name: "Plugins", Enabled: true, Enforced: false)
+        };
+
+        var localModFiles = new SyncPathModFiles
+        {
+            [syncPath] = new Dictionary<string, ModFile>
+            {
+                [file] = new ModFile("local-hash", Directory: false)
+            }
+        };
+
+        var remoteModFiles = new SyncPathModFiles
+        {
+            [syncPath] = new Dictionary<string, ModFile>
+            {
+                [file] = new ModFile("server-hash", Directory: false)
+            }
+        };
+
+        var previousServerModFiles = new SyncPathModFiles
+        {
+            [syncPath] = new Dictionary<string, ModFile>()
+        };
+
+        // Act
+        var updatedFiles = Sync.GetUpdatedFiles(syncPaths, localModFiles, remoteModFiles, previousServerModFiles);
+
+        // Assert
+        Assert.Single(updatedFiles[syncPath]);
+        Assert.Contains(file, updatedFiles[syncPath]);
+    }
+
+    [Fact]
+    public void GetUpdatedFiles_WithEnforcedSyncPath_Should_UpdateDespiteUnchangedPreviousServerHash()
+    {
+        // Arrange
+        const string syncPath = "BepInEx/plugins";
+        const string file = "BepInEx/plugins/enforced.dll";
+        var syncPaths = new List<SyncPath>
+        {
+            new(Path: syncPath, Name: "Plugins", Enabled: true, Enforced: true)
+        };
+
+        var localModFiles = new SyncPathModFiles
+        {
+            [syncPath] = new Dictionary<string, ModFile>
+            {
+                [file] = new ModFile("local-edited-hash", Directory: false)
+            }
+        };
+
+        var remoteModFiles = new SyncPathModFiles
+        {
+            [syncPath] = new Dictionary<string, ModFile>
+            {
+                [file] = new ModFile("server-original-hash", Directory: false)
+            }
+        };
+
+        var previousServerModFiles = new SyncPathModFiles
+        {
+            [syncPath] = new Dictionary<string, ModFile>
+            {
+                [file] = new ModFile("server-original-hash", Directory: false)
+            }
+        };
+
+        // Act
+        var updatedFiles = Sync.GetUpdatedFiles(syncPaths, localModFiles, remoteModFiles, previousServerModFiles);
+
+        // Assert
+        Assert.Single(updatedFiles[syncPath]);
+        Assert.Contains(file, updatedFiles[syncPath]);
+    }
+
+    [Fact]
+    public void GetUpdatedFiles_WithDifferentCasingAcrossInputs_Should_MatchPreviousAndLocalKeys()
+    {
+        // Arrange
+        const string syncPath = "BepInEx/plugins";
+        const string remoteFile = "BepInEx/plugins/MixedCase.dll";
+        var syncPaths = new List<SyncPath>
+        {
+            new(Path: syncPath, Name: "Plugins", Enabled: true, Enforced: false)
+        };
+
+        var localModFiles = new SyncPathModFiles
+        {
+            ["bepinex/PLUGINS"] = new Dictionary<string, ModFile>
+            {
+                ["bepinex/plugins/mixedcase.dll"] = new ModFile("local-edited-hash", Directory: false)
+            }
+        };
+
+        var remoteModFiles = new SyncPathModFiles
+        {
+            ["BEPINEX/plugins"] = new Dictionary<string, ModFile>
+            {
+                [remoteFile] = new ModFile("server-original-hash", Directory: false)
+            }
+        };
+
+        var previousServerModFiles = new SyncPathModFiles
+        {
+            ["BepInEx/Plugins"] = new Dictionary<string, ModFile>
+            {
+                ["BepInEx/Plugins/MixedCase.dll"] = new ModFile("server-original-hash", Directory: false)
+            }
+        };
+
+        // Act
+        var updatedFiles = Sync.GetUpdatedFiles(syncPaths, localModFiles, remoteModFiles, previousServerModFiles);
+
+        // Assert
+        Assert.Empty(updatedFiles[syncPath]);
+    }
+
+    [Fact]
+    public void CompareModFiles_WithPreviousServerManifest_Should_ForwardManifestAwareDiffs()
+    {
+        // Arrange
+        const string syncPath = "BepInEx/plugins";
+        const string addedFile = "BepInEx/plugins/new-server-file.dll";
+        const string locallyEditedUnchangedServerFile = "BepInEx/plugins/local-edit-preserved.dll";
+        const string locallyEditedChangedServerFile = "BepInEx/plugins/local-edit-updated.dll";
+        const string serverDeletedTrackedFile = "BepInEx/plugins/server-deleted.dll";
+        const string untrackedLocalExtraFile = "BepInEx/plugins/user-created.dll";
+
+        var syncPaths = new List<SyncPath>
+        {
+            new(Path: syncPath, Name: "Plugins", Enabled: true, Enforced: false)
+        };
+
+        var localModFiles = new SyncPathModFiles
+        {
+            [syncPath] = new Dictionary<string, ModFile>
+            {
+                [locallyEditedUnchangedServerFile] = new ModFile("local-edited-hash", Directory: false),
+                [locallyEditedChangedServerFile] = new ModFile("local-edited-hash", Directory: false),
+                [serverDeletedTrackedFile] = new ModFile("old-server-hash", Directory: false),
+                [untrackedLocalExtraFile] = new ModFile("local-user-hash", Directory: false)
+            }
+        };
+
+        var remoteModFiles = new SyncPathModFiles
+        {
+            [syncPath] = new Dictionary<string, ModFile>
+            {
+                [addedFile] = new ModFile("new-server-hash", Directory: false),
+                [locallyEditedUnchangedServerFile] = new ModFile("server-original-hash", Directory: false),
+                [locallyEditedChangedServerFile] = new ModFile("server-updated-hash", Directory: false)
+            }
+        };
+
+        var previousServerModFiles = new SyncPathModFiles
+        {
+            [syncPath] = new Dictionary<string, ModFile>
+            {
+                [locallyEditedUnchangedServerFile] = new ModFile("server-original-hash", Directory: false),
+                [locallyEditedChangedServerFile] = new ModFile("server-original-hash", Directory: false),
+                [serverDeletedTrackedFile] = new ModFile("old-server-hash", Directory: false)
+            }
+        };
+
+        // Act
+        Sync.CompareModFiles(
+            Directory.GetCurrentDirectory(),
+            syncPaths,
+            localModFiles,
+            remoteModFiles,
+            previousServerModFiles,
+            out var addedFiles,
+            out var updatedFiles,
+            out var removedFiles,
+            out var createdDirectories
+        );
+
+        // Assert
+        Assert.Single(addedFiles[syncPath]);
+        Assert.Contains(addedFile, addedFiles[syncPath]);
+
+        Assert.Single(updatedFiles[syncPath]);
+        Assert.Contains(locallyEditedChangedServerFile, updatedFiles[syncPath]);
+        Assert.DoesNotContain(locallyEditedUnchangedServerFile, updatedFiles[syncPath]);
+
+        Assert.Single(removedFiles[syncPath]);
+        Assert.Contains(serverDeletedTrackedFile, removedFiles[syncPath]);
+        Assert.DoesNotContain(untrackedLocalExtraFile, removedFiles[syncPath]);
+
+        Assert.Empty(createdDirectories[syncPath]);
+    }
+
+    [Fact]
     public void GetCreatedDirectories_Should_Only_Include_Directories()
     {
         // Arrange
@@ -186,6 +471,154 @@ public class SyncTests
         // The exclusion pattern uses forward slashes; the path uses backslashes
         List<Regex> exclusions = [Glob.CreateNoEnd("BepInEx/plugins/spt")];
         Assert.True(Sync.IsExcluded(exclusions, @"BepInEx\plugins\spt\core.dll"));
+    }
+
+    [Fact]
+    public void GetRemovedFiles_WithTrackedPreviousServerFile_Should_RemoveWhenServerNoLongerReportsIt()
+    {
+        // Arrange
+        const string syncPath = "BepInEx/plugins";
+        const string file = "BepInEx/plugins/server-deleted.dll";
+        var syncPaths = new List<SyncPath>
+        {
+            new(Path: syncPath, Name: "Plugins", Enabled: true, Enforced: false)
+        };
+
+        var localModFiles = new SyncPathModFiles
+        {
+            [syncPath] = new Dictionary<string, ModFile>
+            {
+                [file] = new ModFile("old-server-hash", Directory: false)
+            }
+        };
+
+        var remoteModFiles = new SyncPathModFiles
+        {
+            [syncPath] = new Dictionary<string, ModFile>()
+        };
+
+        var previousServerModFiles = new SyncPathModFiles
+        {
+            [syncPath] = new Dictionary<string, ModFile>
+            {
+                [file] = new ModFile("old-server-hash", Directory: false)
+            }
+        };
+
+        // Act
+        var removedFiles = Sync.GetRemovedFiles(syncPaths, localModFiles, remoteModFiles, previousServerModFiles);
+
+        // Assert
+        Assert.Single(removedFiles[syncPath]);
+        Assert.Contains(file, removedFiles[syncPath]);
+    }
+
+    [Fact]
+    public void GetRemovedFiles_WithUntrackedLocalFile_Should_PreserveWhenServerDoesNotReportIt()
+    {
+        // Arrange
+        const string syncPath = "BepInEx/plugins";
+        const string localExtra = "BepInEx/plugins/user-created.dll";
+        var syncPaths = new List<SyncPath>
+        {
+            new(Path: syncPath, Name: "Plugins", Enabled: true, Enforced: false)
+        };
+
+        var localModFiles = new SyncPathModFiles
+        {
+            [syncPath] = new Dictionary<string, ModFile>
+            {
+                [localExtra] = new ModFile("local-user-hash", Directory: false)
+            }
+        };
+
+        var remoteModFiles = new SyncPathModFiles
+        {
+            [syncPath] = new Dictionary<string, ModFile>()
+        };
+
+        var previousServerModFiles = new SyncPathModFiles
+        {
+            [syncPath] = new Dictionary<string, ModFile>()
+        };
+
+        // Act
+        var removedFiles = Sync.GetRemovedFiles(syncPaths, localModFiles, remoteModFiles, previousServerModFiles);
+
+        // Assert
+        Assert.Empty(removedFiles[syncPath]);
+    }
+
+    [Fact]
+    public void GetRemovedFiles_WithNullPreviousServerManifest_Should_KeepTwoWayRemovalBehavior()
+    {
+        // Arrange
+        const string syncPath = "BepInEx/plugins";
+        const string localFile = "BepInEx/plugins/local-or-server-unknown.dll";
+        var syncPaths = new List<SyncPath>
+        {
+            new(Path: syncPath, Name: "Plugins", Enabled: true, Enforced: false)
+        };
+
+        var localModFiles = new SyncPathModFiles
+        {
+            [syncPath] = new Dictionary<string, ModFile>
+            {
+                [localFile] = new ModFile("local-hash", Directory: false)
+            }
+        };
+
+        var remoteModFiles = new SyncPathModFiles
+        {
+            [syncPath] = new Dictionary<string, ModFile>()
+        };
+
+        // Act
+        var removedFiles = Sync.GetRemovedFiles(syncPaths, localModFiles, remoteModFiles);
+
+        // Assert
+        Assert.Single(removedFiles[syncPath]);
+        Assert.Contains(localFile, removedFiles[syncPath]);
+    }
+
+    [Fact]
+    public void GetRemovedFiles_WithDifferentCasingAcrossInputs_Should_MatchPreviousAndRemoteKeys()
+    {
+        // Arrange
+        const string syncPath = "BepInEx/plugins";
+        const string localFile = "bepinex/plugins/mixedcase.dll";
+        var syncPaths = new List<SyncPath>
+        {
+            new(Path: syncPath, Name: "Plugins", Enabled: true, Enforced: false)
+        };
+
+        var localModFiles = new SyncPathModFiles
+        {
+            ["bepinex/PLUGINS"] = new Dictionary<string, ModFile>
+            {
+                [localFile] = new ModFile("old-server-hash", Directory: false)
+            }
+        };
+
+        var remoteModFiles = new SyncPathModFiles
+        {
+            ["BEPINEX/plugins"] = new Dictionary<string, ModFile>()
+        };
+
+        var previousServerModFiles = new SyncPathModFiles
+        {
+            ["BepInEx/Plugins"] = new Dictionary<string, ModFile>
+            {
+                ["BepInEx/Plugins/MixedCase.dll"] = new ModFile("old-server-hash", Directory: false)
+            }
+        };
+
+        // Act
+        var removedFiles = Sync.GetRemovedFiles(syncPaths, localModFiles, remoteModFiles, previousServerModFiles);
+
+        // Assert
+        Assert.Single(removedFiles[syncPath]);
+        Assert.Contains(localFile, removedFiles[syncPath]);
     }
 
     [Fact]

@@ -21,6 +21,29 @@ public class ClientSyncService(ManualLogSource logger, ServerModule serverModule
         out SyncPathFileList removedFiles,
         out SyncPathFileList createdDirectories)
     {
+        AnalyzeModFiles(
+            localModFiles,
+            remoteModFiles,
+            null,
+            enabledSyncPaths,
+            out addedFiles,
+            out updatedFiles,
+            out removedFiles,
+            out createdDirectories
+        );
+    }
+
+    /// <inheritdoc/>
+    public void AnalyzeModFiles(
+        SyncPathModFiles localModFiles,
+        SyncPathModFiles remoteModFiles,
+        SyncPathModFiles? previousServerModFiles,
+        List<SyncPath> enabledSyncPaths,
+        out SyncPathFileList addedFiles,
+        out SyncPathFileList updatedFiles,
+        out SyncPathFileList removedFiles,
+        out SyncPathFileList createdDirectories)
+    {
 #if NARCONET_DEBUG_LOGGING
         logger.LogDebug($"AnalyzeModFiles: Comparing {localModFiles.Count} local sync paths with {remoteModFiles.Count} remote sync paths");
 #endif
@@ -29,6 +52,7 @@ public class ClientSyncService(ManualLogSource logger, ServerModule serverModule
             enabledSyncPaths,
             localModFiles,
             remoteModFiles,
+            previousServerModFiles,
             out addedFiles,
             out updatedFiles,
             out removedFiles,
